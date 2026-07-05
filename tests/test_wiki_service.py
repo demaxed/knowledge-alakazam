@@ -366,8 +366,7 @@ async def test_create_revision_increments_revision_number() -> None:
     assert detail.current_revision.revision_no == 2
     assert detail.current_revision.content == "Second revision"
     assert [
-        revision.revision_no
-        for revision in await repository.list_page_revisions(detail.page.id)
+        revision.revision_no for revision in await repository.list_page_revisions(detail.page.id)
     ] == [1, 2]
 
 

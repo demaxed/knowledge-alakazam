@@ -1,31 +1,79 @@
 # Knowledge Alakazam
 
-Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
+Production-oriented FastAPI backend for multimodal RAG ingest with
+RAG-Anything, LightRAG, PostgreSQL/pgvector/Apache AGE storage, S3-compatible
+asset storage, and a PostgreSQL-backed llm-wiki canonical store.
 
-Task 10 adds validation and basic observability. The API now validates wiki pages,
-persists validation results in PostgreSQL, emits structured application logs with
-request IDs, and exposes an operational health response with DB, optional S3, and RAG
-runtime status.
+The project is intentionally service-shaped from the start:
+
+- `uv` is the Python package and environment manager.
+- FastAPI exposes health, ingest, query, wiki, compile, and validation APIs.
+- PostgreSQL is the source of truth for app state, llm-wiki state, ingest jobs,
+  compile jobs, validation results, and LightRAG production storages.
+- MinIO/S3 stores raw uploaded documents and parsed output assets.
+- Markdown/Git wiki export can be added later, but PostgreSQL remains canonical.
+
+## Architecture Overview
+
+The application has four main runtime paths:
+
+- API service: FastAPI app in `app/main.py`, routers under `app/api/`, settings
+  in `app/config.py`, async SQLAlchemy session management in `app/db.py`.
+- RAG runtime: `app/rag_runtime.py` lazily creates tenant-scoped LightRAG and
+  RAG-Anything runtime instances. Runtime initialization is disabled by default
+  with `RAG_RUNTIME_DISABLED=true`.
+- Ingest pipeline: `app/ingest_service.py` stages uploaded files, uploads raw
+  documents to S3, calls RAG-Anything, uploads parsed assets, and persists
+  `ingest_job` status transitions.
+- llm-wiki: `wiki/` contains SQLAlchemy models, repository methods, service
+  logic, compiler skeleton, and validators. Wiki pages, revisions, links,
+  claims, provenance, compile jobs, and validation results live in PostgreSQL.
+
+Local Docker Compose provides:
+
+- `postgres`: PostgreSQL 16 with Apache AGE and pgvector.
+- `minio`: S3-compatible object storage.
+- `create-buckets`: creates `rag-raw` and `rag-assets`.
+- `app`: FastAPI service on `http://127.0.0.1:8080`.
+- `worker`: optional async ingest worker behind the `worker` profile.
+
+More detail is in [docs/architecture.md](docs/architecture.md) and
+[docs/operations.md](docs/operations.md).
 
 ## Requirements
 
 - Python 3.11 through 3.13
 - `uv`
+- Docker and Docker Compose for the production-like local stack
 
-The Python upper bound is intentional for the initial lockfile because the current RAG and ML dependency stack is resolved for the actively supported 3.11-3.13 range.
+The Python upper bound is intentional because the current RAG and ML dependency
+stack is resolved for the actively supported 3.11-3.13 range.
 
-## Local Development
+## Local Run With uv
 
-Install the base service dependencies:
+Install base service dependencies:
 
 ```bash
 uv sync
 ```
 
-Install optional RAG dependencies when working on ingest or runtime integration:
+Install optional RAG runtime dependencies when working on ingest or query:
 
 ```bash
 uv sync --extra rag
+```
+
+Copy local settings and edit secrets outside Git:
+
+```bash
+cp .env.example .env
+```
+
+Start local dependencies, then apply migrations:
+
+```bash
+docker compose up -d postgres minio create-buckets
+uv run alembic upgrade head
 ```
 
 Run the API locally:
@@ -34,83 +82,58 @@ Run the API locally:
 uv run uvicorn app.main:app --reload
 ```
 
-Check the health endpoint:
+Check health:
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-The response includes the app status, service/environment labels, DB reachability,
-optional S3 bucket reachability, and whether the RAG runtime is enabled or disabled.
-Set `HEALTH_CHECK_S3=true` to make `/health` check the configured raw and asset
-buckets; it is disabled by default so local development does not block on MinIO.
+For local boot without model credentials, keep `RAG_RUNTIME_DISABLED=true`.
+When disabled, `/query`, synchronous ingest, and compile endpoints return a
+clear HTTP 503 instead of importing or initializing LightRAG/RAG-Anything.
 
-Query the RAG runtime after enabling it and configuring model credentials:
+## Local Run With Docker Compose
 
-```bash
-curl -X POST http://127.0.0.1:8000/query \
-  -H 'content-type: application/json' \
-  -d '{"tenant_id":"default","question":"What is indexed?","mode":"hybrid"}'
-```
-
-For tests and local boot without LLM credentials, keep `RAG_RUNTIME_DISABLED=true`. When disabled, `/query` returns HTTP 503 with a clear runtime-disabled message instead of importing or initializing LightRAG/RAG-Anything.
-
-Ingest a local document after enabling the RAG runtime and running migrations:
+Validate the Compose file:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/ingest \
-  -F tenant_id=default \
-  -F source_id=example-report \
-  -F file=@/path/to/report.pdf
+docker compose config --quiet
 ```
 
-With `INGEST_SYNC=true`, `/ingest` runs the structural ingest flow in the request:
-stage file, upload raw S3 object, call `RAGAnything.process_document_complete(...)`,
-upload extracted assets, and mark the job `succeeded` or `failed`. With
-`INGEST_SYNC=false`, the endpoint stages and uploads the raw document, creates or
-updates a `pending` `ingest_job`, and returns HTTP 202 for a future worker.
-
-Run the async ingest worker locally:
+Build and start the stack:
 
 ```bash
-uv run python -m worker.ingest_worker
+docker compose up --build
 ```
 
-The worker polls for pending jobs, claims one row at a time with
-`FOR UPDATE SKIP LOCKED`, marks it `processing`, downloads the raw object, runs the
-same ingest service pipeline, and marks the job `succeeded` or `failed`. The current
-schema does not store retry counters, so failed jobs remain failed until a retry policy
-and attempt columns are added in a later migration.
-
-Compile a wiki page from indexed evidence:
+Apply migrations from the host:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/wiki/compile \
-  -H 'content-type: application/json' \
-  -d '{"tenant_id":"default","source_id":"example-report","topic":"Main findings","target_slug":"main-findings"}'
+uv run alembic upgrade head
 ```
 
-Validate a wiki page and read the saved validation results:
+Check the API:
 
 ```bash
-curl -X POST 'http://127.0.0.1:8000/wiki/pages/main-findings/validate?tenant_id=default'
-curl 'http://127.0.0.1:8000/wiki/pages/main-findings/validation-results?tenant_id=default'
+curl http://127.0.0.1:8080/health
 ```
 
-Run checks:
+Open the MinIO console at `http://127.0.0.1:9001`. The local default
+credentials in `.env.example` are `minioadmin` / `minioadmin`; change them in
+real environments.
+
+By default the app image installs only base API dependencies. To install
+RAG-Anything and LightRAG in the container:
 
 ```bash
-uv run ruff check .
-uv run pytest
+INSTALL_RAG_EXTRAS=true docker compose build app
 ```
 
-## Database Migrations
+To use `/query`, synchronous ingest, or wiki compile in Docker Compose, set
+`RAG_RUNTIME_DISABLED=false`, provide model credentials, and rebuild/restart if
+the image dependency set changed.
 
-Start PostgreSQL before applying migrations:
-
-```bash
-docker compose up -d postgres
-```
+## Migrations
 
 Apply all migrations:
 
@@ -118,160 +141,280 @@ Apply all migrations:
 uv run alembic upgrade head
 ```
 
-Create a new autogenerated migration after model changes:
+Create a new autogenerated migration after SQLAlchemy model changes:
 
 ```bash
 uv run alembic revision --autogenerate -m "describe schema change"
 ```
 
-The initial migration creates the llm-wiki canonical store tables, including pages, revisions, links, claims, claim sources, ingest jobs, compile jobs, and validation results. The wiki data source of truth is PostgreSQL; Markdown/Git export can be added later as an optional target.
+The initial migration creates the canonical llm-wiki and job tables:
+`wiki_page`, `wiki_revision`, `wiki_link`, `wiki_claim`,
+`wiki_claim_source`, `ingest_job`, `wiki_compile_job`, and
+`wiki_validation_result`.
 
-## llm-wiki Compiler
+PostgreSQL extensions are initialized by `db/init/001_extensions.sql` when the
+database volume is first created:
 
-`POST /wiki/compile` runs a synchronous first-pass compile job. Provide either
-`source_id`, `topic`, or both:
-
-- `source_id` only compiles a source overview page.
-- `topic` only compiles a topic page from the tenant RAG index.
-- `source_id` plus `topic` asks the runtime for evidence about that topic within the source.
-- `target_slug` is optional and controls the page slug.
-
-Generated pages are Markdown with these sections: Summary, Key Concepts,
-Source-backed Claims, Related Pages, and Open Questions. Links discovered by the
-compiler are stored as wiki links using `[[...]]` syntax and rebuilt through
-`WikiService`.
-
-The compiler does not fabricate citations. If the current RAG runtime metadata
-contains structured source IDs, chunk IDs, entity IDs, relation IDs, page numbers, or
-quotes, those fields are copied to `wiki_claim_source`. If the runtime returns only an
-answer plus unstructured metadata, the compiler stores the best available
-`source_id` fallback and preserves the raw metadata in `wiki_claim_source.locator`
-with `structured_source_ids_available=false`.
-
-## llm-wiki Validation
-
-`POST /wiki/pages/{slug}/validate?tenant_id=...` runs the current validator set against
-the page's current revision and replaces saved validation rows for that revision.
-`GET /wiki/pages/{slug}/validation-results?tenant_id=...` returns the saved rows for
-the current revision.
-
-Current validators:
-
-- `broken_wikilinks`: reports Markdown `[[...]]` targets that do not resolve to a page
-  in the same tenant.
-- `unsupported_claims`: skeleton claim support check that flags current-revision claims
-  whose `support_status` is `unknown` or `unsupported`.
-- `stale_page`: skeleton freshness check that reports pages not updated in the default
-  90-day window.
-- `duplicate_slug_title`: detects duplicate titles and keeps a defensive duplicate-slug
-  check even though the database enforces unique `(tenant_id, slug)`.
-
-The validation layer stores results in `wiki_validation_result`. It does not call an LLM
-or fabricate evidence; deeper claim verification can be added once the RAG evidence
-payloads are stable.
-
-## Observability
-
-Application logs are emitted as JSON for app-owned events. Each HTTP request receives
-an `X-Request-ID` response header; an incoming `X-Request-ID` header is preserved.
-Request logs include method, path, status, duration, and request ID, but not headers,
-request bodies, or secrets.
-
-The service also logs:
-
-- ingest job lifecycle events: pending, processing, succeeded, failed
-- RAG runtime initialization and skipped initialization when disabled
-- S3 raw document uploads and extracted asset upload counts
-
-Secret-like log fields are redacted by the JSON formatter. Avoid adding raw settings,
-headers, credentials, or model provider payloads to log extras.
-
-## Docker Compose
-
-The Compose stack starts:
-
-- FastAPI app on `http://127.0.0.1:8080`
-- PostgreSQL database `rag` with user `rag`
-- PostgreSQL extensions `vector` and `age`
-- MinIO S3 API on `http://127.0.0.1:9000`
-- MinIO console on `http://127.0.0.1:9001`
-- Buckets `rag-raw` and `rag-assets`
-
-Start the stack:
-
-```bash
-docker compose up --build
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS age;
 ```
 
-Start the optional async worker alongside the stack:
-
-```bash
-docker compose --profile worker up --build
-```
-
-Check the app health endpoint:
-
-```bash
-curl http://127.0.0.1:8080/health
-```
-
-Open the MinIO console at `http://127.0.0.1:9001`. The local default credentials are `minioadmin` / `minioadmin`; change them outside local development.
-
-PostgreSQL is built from the Apache AGE PostgreSQL 16 image and compiles pgvector into the same image. The init script at `db/init/001_extensions.sql` creates both extensions when the database volume is initialized for the first time. If you change extension initialization while keeping an existing local database volume, recreate the volume:
+If you change extension initialization while keeping an existing local volume,
+recreate the local database volume:
 
 ```bash
 docker compose down -v
 docker compose up --build
 ```
 
-By default the app image installs only the base API dependencies. Set `INSTALL_RAG_EXTRAS=true` when the RAG runtime tasks need the optional RAG-Anything and LightRAG packages inside the container:
+## API Examples
+
+### Ingest
+
+Synchronous ingest requires `INGEST_SYNC=true`, a migrated database, reachable
+S3/MinIO, optional RAG packages installed, and `RAG_RUNTIME_DISABLED=false`.
 
 ```bash
-INSTALL_RAG_EXTRAS=true docker compose build app
+curl -X POST http://127.0.0.1:8080/ingest \
+  -F tenant_id=default \
+  -F source_id=example-report \
+  -F file=@/path/to/report.pdf
 ```
 
-To use `/query` in Docker Compose, also provide `OPENAI_API_KEY` and set `RAG_RUNTIME_DISABLED=false`.
+Flow:
 
-## RAG Runtime
+1. Copy upload to `RAG_INPUT_DIR/{tenant_id}/{source_id}/{filename}`.
+2. Upload raw document to `S3_BUCKET_RAW` as
+   `{tenant_id}/{source_id}/{filename}`.
+3. Call `RAGAnything.process_document_complete(...)`.
+4. Upload parsed assets from `RAG_OUTPUT_DIR/{tenant_id}/{source_id}` to
+   `S3_BUCKET_ASSETS` under `output/{tenant_id}/{source_id}/...`.
+5. Persist `ingest_job` as `succeeded` or `failed`.
+
+With `INGEST_SYNC=false`, the endpoint stages and uploads the raw document,
+creates or updates a `pending` `ingest_job`, and returns HTTP 202 for the worker
+to process later.
+
+### Query
+
+```bash
+curl -X POST http://127.0.0.1:8080/query \
+  -H 'content-type: application/json' \
+  -d '{"tenant_id":"default","question":"What is indexed?","mode":"hybrid"}'
+```
+
+Response shape:
+
+```json
+{
+  "answer": "...",
+  "metadata": {}
+}
+```
+
+### Wiki Page
+
+Create or update a page:
+
+```bash
+curl -X POST http://127.0.0.1:8080/wiki/pages \
+  -H 'content-type: application/json' \
+  -d '{
+    "tenant_id": "default",
+    "title": "Example Report",
+    "slug": "example-report",
+    "content": "# Summary\n\nLinks to [[Related Topic]]."
+  }'
+```
+
+Read the page:
+
+```bash
+curl 'http://127.0.0.1:8080/wiki/pages/example-report?tenant_id=default'
+```
+
+Add a revision:
+
+```bash
+curl -X POST http://127.0.0.1:8080/wiki/pages/example-report/revisions \
+  -H 'content-type: application/json' \
+  -d '{
+    "tenant_id": "default",
+    "content": "# Summary\n\nUpdated link to [[Related Topic]]."
+  }'
+```
+
+List backlinks:
+
+```bash
+curl 'http://127.0.0.1:8080/wiki/pages/related-topic/backlinks?tenant_id=default'
+```
+
+Compile a wiki page from RAG evidence:
+
+```bash
+curl -X POST http://127.0.0.1:8080/wiki/compile \
+  -H 'content-type: application/json' \
+  -d '{
+    "tenant_id": "default",
+    "source_id": "example-report",
+    "topic": "Main findings",
+    "target_slug": "main-findings"
+  }'
+```
+
+Validate a page and list saved validation results:
+
+```bash
+curl -X POST 'http://127.0.0.1:8080/wiki/pages/main-findings/validate?tenant_id=default'
+curl 'http://127.0.0.1:8080/wiki/pages/main-findings/validation-results?tenant_id=default'
+```
+
+## Worker Usage
+
+Run the async ingest worker locally:
+
+```bash
+uv run python -m worker.ingest_worker
+```
+
+Run it through Docker Compose:
+
+```bash
+docker compose --profile worker up --build
+```
+
+The worker claims pending jobs with `FOR UPDATE SKIP LOCKED`, marks one job
+`processing`, downloads the raw S3 object, runs the ingest pipeline, and marks
+the job `succeeded` or `failed`. Multiple workers should not double-claim the
+same pending job.
+
+## Development Commands
+
+The primary commands use `uv` directly:
+
+```bash
+uv run ruff format .
+uv run ruff check .
+uv run pytest
+uv run alembic upgrade head
+```
+
+Convenience Make targets are also available:
+
+```bash
+make format
+make lint
+make test
+make migrate
+```
+
+## Environment Variables
+
+Copy `.env.example` to `.env` for local overrides. Do not commit real secrets.
+
+| Variable | Purpose | Local default |
+| --- | --- | --- |
+| `ENV` | Runtime environment label. | `local` |
+| `SERVICE_NAME` | FastAPI app title and health service label. | `knowledge-alakazam` |
+| `LOG_LEVEL` | Application log level. | `INFO` |
+| `HEALTH_CHECK_TIMEOUT_SECONDS` | Timeout for DB and optional S3 health checks. | `1.0` |
+| `HEALTH_CHECK_S3` | Enables bucket reachability checks in `/health`. | `false` |
+| `POSTGRES_DB` | Local Compose PostgreSQL database name. | `rag` |
+| `POSTGRES_USER` | Local Compose PostgreSQL user. | `rag` |
+| `POSTGRES_PASSWORD` | Local Compose PostgreSQL password. | `rag` |
+| `APP_DATABASE_URL` | SQLAlchemy async PostgreSQL URL for the app. | `postgresql+asyncpg://rag:rag@localhost:5432/rag` |
+| `RAG_WORKING_DIR` | LightRAG working directory. | `./storage/lightrag` |
+| `RAG_OUTPUT_DIR` | Parsed output root. | `./storage/output` |
+| `RAG_INPUT_DIR` | Normalized ingest input root. | `./storage/inputs` |
+| `PARSER` | RAG-Anything parser selector passed by ingest service. | `mineru` |
+| `PARSE_METHOD` | RAG-Anything parse method. | `auto` |
+| `INGEST_SYNC` | Runs ingest inline when `true`; creates pending jobs when `false`. | `true` |
+| `WORKER_POLL_INTERVAL_SECONDS` | Worker idle poll interval. | `5.0` |
+| `OPENAI_API_KEY` | OpenAI-compatible API key for LLM, VLM, and embeddings. | empty |
+| `OPENAI_BASE_URL` | Optional OpenAI-compatible base URL. | empty |
+| `LLM_MODEL` | Chat model for text answers and wiki compile. | `gpt-4.1-mini` |
+| `VISION_MODEL` | Vision model for multimodal processing. | `gpt-4.1-mini` |
+| `EMBEDDING_MODEL` | Embedding model. | `text-embedding-3-small` |
+| `EMBEDDING_DIM` | Embedding vector dimension. Immutable once an index exists. | `1536` |
+| `RAG_RUNTIME_DISABLED` | Disables lazy RAG runtime initialization. | `true` |
+| `RAG_ENABLE_IMAGE_PROCESSING` | Enables RAG-Anything image processing when supported. | `true` |
+| `RAG_ENABLE_TABLE_PROCESSING` | Enables RAG-Anything table processing when supported. | `true` |
+| `RAG_ENABLE_EQUATION_PROCESSING` | Enables RAG-Anything equation processing when supported. | `true` |
+| `MINIO_ROOT_USER` | Local MinIO root user. | `minioadmin` |
+| `MINIO_ROOT_PASSWORD` | Local MinIO root password. | `minioadmin` |
+| `S3_ENDPOINT_URL` | S3-compatible endpoint. Compose app overrides to `http://minio:9000`. | `http://localhost:9000` |
+| `S3_REGION_NAME` | S3 region name for boto3. | `us-east-1` |
+| `S3_ACCESS_KEY_ID` | S3 access key. | `minioadmin` |
+| `S3_SECRET_ACCESS_KEY` | S3 secret key. | `minioadmin` |
+| `S3_BUCKET_RAW` | Raw uploaded document bucket. | `rag-raw` |
+| `S3_BUCKET_ASSETS` | Parsed asset bucket. | `rag-assets` |
+| `LIGHTRAG_KV_STORAGE` | LightRAG KV storage selector. | `PGKVStorage` |
+| `LIGHTRAG_VECTOR_STORAGE` | LightRAG vector storage selector. | `PGVectorStorage` |
+| `LIGHTRAG_GRAPH_STORAGE` | LightRAG graph storage selector. | `PGGraphStorage` |
+| `LIGHTRAG_DOC_STATUS_STORAGE` | LightRAG document status storage selector. | `PGDocStatusStorage` |
+| `PGVECTOR_VERSION` | pgvector tag compiled into the local Postgres image. | `v0.8.4` |
+| `INSTALL_RAG_EXTRAS` | Installs optional RAG deps in Docker image when `true`. | `false` |
+
+## RAG Runtime Notes
 
 The runtime integration was checked against the locked optional packages:
 
 - `lightrag-hku==1.5.4`
 - `raganything==1.3.1`
 
-The installed LightRAG API exposes `LightRAG(...)`, `initialize_storages()`, `finalize_storages()`, and async `aquery(...)`. `initialize_storages()` initializes pipeline status for the workspace, so the app calls it before handing the instance to RAG-Anything.
+The installed LightRAG API exposes `LightRAG(...)`,
+`initialize_storages()`, `finalize_storages()`, and async `aquery(...)`.
+`initialize_storages()` initializes pipeline status for the workspace, so the
+app calls it before handing the instance to RAG-Anything.
 
-The installed RAG-Anything API exposes `RAGAnything(lightrag=..., llm_model_func=..., vision_model_func=..., embedding_func=..., config=...)`, `RAGAnythingConfig`, async `aquery(...)`, and `finalize_storages()`. The app passes the existing LightRAG instance and configures image, table, and equation processing through the config object.
+The installed RAG-Anything API exposes
+`RAGAnything(lightrag=..., llm_model_func=..., vision_model_func=...,
+embedding_func=..., config=...)`, `RAGAnythingConfig`, async `aquery(...)`,
+`process_document_complete(...)`, and `finalize_storages()`.
 
-Runtime instances are lazy and tenant-scoped. The API maps each `tenant_id` to a safe LightRAG workspace name and caches one runtime per workspace in the process. PostgreSQL connection settings for LightRAG storages are derived from `APP_DATABASE_URL` and exported to the package-expected `POSTGRES_*` environment variables during runtime initialization.
+Runtime instances are lazy and tenant-scoped. The API maps each `tenant_id` to a
+safe LightRAG workspace name and caches one runtime per workspace in the
+process. PostgreSQL connection settings for LightRAG storages are derived from
+`APP_DATABASE_URL` and exported to the package-expected `POSTGRES_*`
+environment variables during runtime initialization.
 
-The ingest service uses the same tenant runtime and calls
-`RAGAnything.process_document_complete(file_path=..., output_dir=..., parse_method=..., doc_id=source_id, file_name=...)`.
-Raw documents are stored in the configured raw bucket under
-`{tenant_id}/{source_id}/{filename}`. Extracted assets are stored in the configured
-asset bucket under `output/{tenant_id}/{source_id}/...`.
+## Observability
 
-## Configuration
+Application-owned logs are emitted as JSON. Each HTTP request receives an
+`X-Request-ID` response header; an incoming request ID is preserved.
 
-Copy `.env.example` to `.env` for local overrides. Do not commit secrets.
+Logs include:
 
-Important variables:
+- request started, finished, and failed events
+- ingest job lifecycle events
+- RAG runtime initialization events
+- S3 raw document uploads and parsed asset upload counts
 
-- `ENV`, `SERVICE_NAME`: runtime environment label and FastAPI service title.
-- `LOG_LEVEL`: application log level.
-- `HEALTH_CHECK_TIMEOUT_SECONDS`: timeout for DB and optional S3 checks in `/health`.
-- `HEALTH_CHECK_S3`: when `true`, `/health` checks raw and asset bucket reachability.
-- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: PostgreSQL database and credentials.
-- `APP_DATABASE_URL`: local non-container database URL. The Compose app overrides this to use the `postgres` service hostname.
-- `RAG_WORKING_DIR`, `RAG_OUTPUT_DIR`, `RAG_INPUT_DIR`: runtime paths for LightRAG state, parsed output, and ingest inputs.
-- `PARSER`, `PARSE_METHOD`: parser selection knobs for the later RAG-Anything ingest pipeline.
-- `INGEST_SYNC`: when `true`, `/ingest` processes immediately; when `false`, it only creates a pending job after staging and raw upload.
-- `WORKER_POLL_INTERVAL_SECONDS`: seconds the ingest worker waits before polling again when no pending job is available.
-- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `VISION_MODEL`, `EMBEDDING_MODEL`: model provider configuration for later runtime integration.
-- `RAG_RUNTIME_DISABLED`: keep `true` for tests or local boot without model credentials; set `false` to enable lazy runtime initialization.
-- `RAG_ENABLE_IMAGE_PROCESSING`, `RAG_ENABLE_TABLE_PROCESSING`, `RAG_ENABLE_EQUATION_PROCESSING`: RAG-Anything multimodal processor flags.
-- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`: MinIO console and S3 credentials.
-- `S3_ENDPOINT_URL`: local non-container S3 endpoint. The Compose app overrides this to use the `minio` service hostname.
-- `S3_BUCKET_RAW`, `S3_BUCKET_ASSETS`: raw document and extracted asset buckets.
-- `LIGHTRAG_KV_STORAGE`, `LIGHTRAG_VECTOR_STORAGE`, `LIGHTRAG_GRAPH_STORAGE`, `LIGHTRAG_DOC_STATUS_STORAGE`: LightRAG storage backend selectors.
-- `EMBEDDING_DIM`: embedding dimension for the index. Treat this value as immutable once an index exists.
+Secret-like log fields are redacted by the JSON formatter. Avoid adding raw
+settings, request headers, credentials, or provider payloads to log extras.
+
+## Known Limitations
+
+- Authentication and authorization are not implemented yet. The API has
+  dependency boundaries where auth can be introduced later.
+- `tenant_id` is a logical isolation key, not a security boundary.
+- Failed ingest jobs do not have retry counters or max-attempt state yet.
+- The worker reuses the synchronous ingest implementation after downloading the
+  raw object. More specialized retry and dead-letter behavior should be added
+  before production workloads.
+- Wiki compiler output is deterministic and conservative, but it depends on the
+  shape of RAG runtime evidence metadata. If chunk/entity/relation IDs are not
+  returned, raw metadata is stored in provenance instead of fabricating
+  citations.
+- Unsupported-claim validation is currently rule-based on `support_status`; it
+  does not perform deep evidence verification yet.
+- `EMBEDDING_DIM` must not be changed for an existing LightRAG index without
+  creating a new index or reindexing.
+- Local Compose uses development credentials from `.env.example`. Replace all
+  credentials and object storage policies for any shared environment.
+- Docker Compose startup depends on building a custom PostgreSQL image with
+  pgvector on top of the Apache AGE image. If the upstream image or package
+  sources are unavailable, see [docs/operations.md](docs/operations.md) for
+  fallback guidance.

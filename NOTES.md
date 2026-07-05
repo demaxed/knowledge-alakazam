@@ -50,3 +50,14 @@ Keep entries short and factual. Do not store secrets in this file.
 - Updated `.env.example`, README, health/config tests, and wiki validation tests.
 - Verification passed: `uv run ruff check .` and `uv run pytest`.
 - Follow-up: unsupported-claim validation is still rule-based on `support_status`; deeper evidence verification should be added after real RAG evidence payloads and citation metadata are observed.
+
+## 2026-07-06 - Task 11: Final Hardening and Docs
+
+- Reworked `README.md` into a final operator guide with architecture overview, uv and Docker Compose startup, migrations, ingest/query/wiki examples, worker usage, environment variable table, observability notes, and known limitations.
+- Added `docs/architecture.md` covering components, data flow, storage model, ingest lifecycle, wiki compiler lifecycle, S3 asset strategy, and PostgreSQL schema explanation.
+- Added `docs/operations.md` covering backups, embedding dimension immutability, PostgreSQL extensions, object storage lifecycle, reindexing, wiki compile replay, health checks, logging, local Compose operations, and secret handling.
+- Added a `Makefile` with `format`, `lint`, `test`, `migrate`, and `docker-config` targets that wrap the existing `uv` and Docker Compose commands.
+- Ran `uv run ruff format .`; it applied mechanical formatting to existing Python files.
+- Verification passed: `docker compose config --quiet`, `uv run ruff check .`, `uv run pytest`, and `uv run mypy app wiki worker`.
+- Live `docker compose up --build -d` verification was attempted but could not connect to the configured Docker daemon socket at `/Users/mademyanenko/.lima/avito/sock/docker.sock`.
+- Follow-up: run `docker compose up --build` from an environment with the Docker daemon running, then apply migrations and check `http://127.0.0.1:8080/health`.

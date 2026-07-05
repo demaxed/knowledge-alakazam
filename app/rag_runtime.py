@@ -248,9 +248,7 @@ class RAGRuntime:
                 result = await ensure_initialized()
                 if not result or not result.get("success"):
                     error = (result or {}).get("error", "unknown error")
-                    raise RAGRuntimeUnavailableError(
-                        f"RAG-Anything initialization failed: {error}"
-                    )
+                    raise RAGRuntimeUnavailableError(f"RAG-Anything initialization failed: {error}")
 
             self._initialized = True
             logger.info(
@@ -363,9 +361,7 @@ class RAGRuntimeRegistry:
 
     async def get(self, tenant_id: str) -> RAGRuntime:
         if self._settings.rag_runtime_disabled:
-            raise RAGRuntimeDisabledError(
-                "RAG runtime is disabled by RAG_RUNTIME_DISABLED=true"
-            )
+            raise RAGRuntimeDisabledError("RAG runtime is disabled by RAG_RUNTIME_DISABLED=true")
 
         workspace = workspace_for_tenant(tenant_id)
         async with self._lock:

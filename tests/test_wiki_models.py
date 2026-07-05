@@ -47,9 +47,9 @@ def test_wiki_page_columns_and_constraints() -> None:
     assert ("tenant_id", "slug") in unique_column_sets(page)
 
     revision_fks = page.c.current_revision_id.foreign_keys
-    assert {
-        fk.constraint.name for fk in revision_fks if fk.constraint is not None
-    } == {"fk_wiki_page_current_revision_id"}
+    assert {fk.constraint.name for fk in revision_fks if fk.constraint is not None} == {
+        "fk_wiki_page_current_revision_id"
+    }
 
 
 def test_revision_and_claim_source_columns() -> None:

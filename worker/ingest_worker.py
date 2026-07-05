@@ -106,9 +106,7 @@ class DatabaseIngestJobQueue:
         async with self._session_factory() as session, session.begin():
             job = await session.get(IngestJob, claimed_job.id)
             if job is None:
-                raise RuntimeError(
-                    f"Ingest job disappeared before status update: {claimed_job.id}"
-                )
+                raise RuntimeError(f"Ingest job disappeared before status update: {claimed_job.id}")
 
             job.status = status
             job.error = error
