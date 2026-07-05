@@ -12,6 +12,7 @@ class HealthResponse(BaseModel):
 
 
 QueryMode = Literal["local", "global", "hybrid", "naive", "mix", "bypass"]
+IngestJobStatus = Literal["pending", "processing", "succeeded", "failed"]
 
 
 class QueryRequest(BaseModel):
@@ -24,6 +25,17 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     metadata: dict[str, Any]
+
+
+class IngestResponse(BaseModel):
+    tenant_id: str
+    source_id: str
+    raw_uri: str
+    output_dir: str
+    asset_count: int
+    asset_urls: list[str]
+    status: IngestJobStatus
+    job_id: UUID | None = None
 
 
 class WikiPageCreateRequest(BaseModel):

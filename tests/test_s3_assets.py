@@ -104,15 +104,15 @@ def test_upload_raw_document_maps_key_and_content_type(tmp_path: Path) -> None:
     result = store.upload_raw_document(local_file, tenant_id="tenant-a", source_id="source-1")
 
     assert result.bucket == "raw-bucket"
-    assert result.key == "raw/tenant-a/source-1/report.pdf"
+    assert result.key == "tenant-a/source-1/report.pdf"
     assert result.content_type == "application/pdf"
     assert result.size_bytes == len(b"%PDF-1.7")
-    assert result.url == "http://minio:9000/raw-bucket/raw/tenant-a/source-1/report.pdf"
+    assert result.url == "http://minio:9000/raw-bucket/tenant-a/source-1/report.pdf"
     assert fake_client.uploads == [
         UploadCall(
             filename=str(local_file),
             bucket="raw-bucket",
-            key="raw/tenant-a/source-1/report.pdf",
+            key="tenant-a/source-1/report.pdf",
             extra_args={"ContentType": "application/pdf"},
         )
     ]
@@ -191,14 +191,14 @@ def test_upload_raw_document_raises_for_missing_bucket(tmp_path: Path) -> None:
 def test_download_raw_document_creates_destination_parent(tmp_path: Path) -> None:
     fake_client = FakeS3Client(
         buckets={"raw-bucket"},
-        objects={("raw-bucket", "raw/tenant-a/source-1/report.pdf"): b"%PDF-1.7"},
+        objects={("raw-bucket", "tenant-a/source-1/report.pdf"): b"%PDF-1.7"},
     )
     store = S3AssetStore(settings=make_settings(), s3_client=fake_client)
     destination = tmp_path / "downloads" / "report.pdf"
 
     store.download_raw_document(
         bucket="raw-bucket",
-        key="raw/tenant-a/source-1/report.pdf",
+        key="tenant-a/source-1/report.pdf",
         destination_path=destination,
     )
 
@@ -206,7 +206,7 @@ def test_download_raw_document_creates_destination_parent(tmp_path: Path) -> Non
     assert fake_client.downloads == [
         DownloadCall(
             bucket="raw-bucket",
-            key="raw/tenant-a/source-1/report.pdf",
+            key="tenant-a/source-1/report.pdf",
             filename=str(destination),
         )
     ]

@@ -14,6 +14,7 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("RAG_INPUT_DIR", "/tmp/input")
     monkeypatch.setenv("PARSER", "mineru")
     monkeypatch.setenv("PARSE_METHOD", "ocr")
+    monkeypatch.setenv("INGEST_SYNC", "false")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.example.test/v1")
     monkeypatch.setenv("LLM_MODEL", "llm-test")
@@ -49,6 +50,7 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.rag_input_dir == Path("/tmp/input")
     assert settings.parser == "mineru"
     assert settings.parse_method == "ocr"
+    assert settings.ingest_sync is False
     assert settings.openai_api_key is not None
     assert settings.openai_api_key.get_secret_value() == "test-key"
     assert settings.openai_base_url == "https://llm.example.test/v1"

@@ -171,7 +171,6 @@ class S3AssetStore:
         path = Path(local_path)
         return "/".join(
             (
-                "raw",
                 self._key_segment(tenant_id, "tenant_id"),
                 self._key_segment(source_id, "source_id"),
                 self._key_segment(path.name, "filename"),

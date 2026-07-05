@@ -2,7 +2,9 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 6 adds the guarded LightRAG + RAG-Anything runtime and `/query` API. Ingest execution is intentionally left for later tasks.
+Task 7 adds the document ingest service and `/ingest` API. The endpoint stages uploads,
+stores raw documents in MinIO/S3, runs RAG-Anything in synchronous mode when enabled,
+uploads extracted assets, and records `ingest_job` status transitions in PostgreSQL.
 
 ## Requirements
 
@@ -46,6 +48,21 @@ curl -X POST http://127.0.0.1:8000/query \
 ```
 
 For tests and local boot without LLM credentials, keep `RAG_RUNTIME_DISABLED=true`. When disabled, `/query` returns HTTP 503 with a clear runtime-disabled message instead of importing or initializing LightRAG/RAG-Anything.
+
+Ingest a local document after enabling the RAG runtime and running migrations:
+
+```bash
+curl -X POST http://127.0.0.1:8000/ingest \
+  -F tenant_id=default \
+  -F source_id=example-report \
+  -F file=@/path/to/report.pdf
+```
+
+With `INGEST_SYNC=true`, `/ingest` runs the structural ingest flow in the request:
+stage file, upload raw S3 object, call `RAGAnything.process_document_complete(...)`,
+upload extracted assets, and mark the job `succeeded` or `failed`. With
+`INGEST_SYNC=false`, the endpoint stages and uploads the raw document, creates or
+updates a `pending` `ingest_job`, and returns HTTP 202 for a future worker.
 
 Run checks:
 
@@ -129,6 +146,12 @@ The installed RAG-Anything API exposes `RAGAnything(lightrag=..., llm_model_func
 
 Runtime instances are lazy and tenant-scoped. The API maps each `tenant_id` to a safe LightRAG workspace name and caches one runtime per workspace in the process. PostgreSQL connection settings for LightRAG storages are derived from `APP_DATABASE_URL` and exported to the package-expected `POSTGRES_*` environment variables during runtime initialization.
 
+The ingest service uses the same tenant runtime and calls
+`RAGAnything.process_document_complete(file_path=..., output_dir=..., parse_method=..., doc_id=source_id, file_name=...)`.
+Raw documents are stored in the configured raw bucket under
+`{tenant_id}/{source_id}/{filename}`. Extracted assets are stored in the configured
+asset bucket under `output/{tenant_id}/{source_id}/...`.
+
 ## Configuration
 
 Copy `.env.example` to `.env` for local overrides. Do not commit secrets.
@@ -140,6 +163,7 @@ Important variables:
 - `APP_DATABASE_URL`: local non-container database URL. The Compose app overrides this to use the `postgres` service hostname.
 - `RAG_WORKING_DIR`, `RAG_OUTPUT_DIR`, `RAG_INPUT_DIR`: runtime paths for LightRAG state, parsed output, and ingest inputs.
 - `PARSER`, `PARSE_METHOD`: parser selection knobs for the later RAG-Anything ingest pipeline.
+- `INGEST_SYNC`: when `true`, `/ingest` processes immediately; when `false`, it only creates a pending job after staging and raw upload.
 - `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `VISION_MODEL`, `EMBEDDING_MODEL`: model provider configuration for later runtime integration.
 - `RAG_RUNTIME_DISABLED`: keep `true` for tests or local boot without model credentials; set `false` to enable lazy runtime initialization.
 - `RAG_ENABLE_IMAGE_PROCESSING`, `RAG_ENABLE_TABLE_PROCESSING`, `RAG_ENABLE_EQUATION_PROCESSING`: RAG-Anything multimodal processor flags.

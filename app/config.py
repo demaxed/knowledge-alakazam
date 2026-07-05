@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     rag_input_dir: Path = Path("./storage/inputs")
     parser: str = "mineru"
     parse_method: str = "auto"
+    ingest_sync: bool = True
 
     openai_api_key: SecretStr | None = None
     openai_base_url: str | None = None

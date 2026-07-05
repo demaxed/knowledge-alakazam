@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
@@ -263,6 +264,27 @@ class RAGRuntime:
                     "doc_status": self.settings.lightrag_doc_status_storage,
                 },
             },
+        )
+
+    async def process_document_complete(
+        self,
+        *,
+        file_path: str | Path,
+        output_dir: str | Path,
+        source_id: str,
+        file_name: str | None = None,
+    ) -> None:
+        await self.initialize()
+
+        if self.rag_anything is None:
+            raise RAGRuntimeUnavailableError("RAG-Anything runtime was not initialized")
+
+        await self.rag_anything.process_document_complete(
+            file_path=str(file_path),
+            output_dir=str(output_dir),
+            parse_method=self.settings.parse_method,
+            doc_id=source_id,
+            file_name=file_name or Path(file_path).name,
         )
 
     async def shutdown(self) -> None:

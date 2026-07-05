@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.ingest import router as ingest_router
 from app.api.query import router as query_router
 from app.api.wiki import router as wiki_router
 from app.config import Settings, get_settings
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = resolved_settings
     application.state.rag_runtime_registry = RAGRuntimeRegistry(resolved_settings)
     application.include_router(health_router)
+    application.include_router(ingest_router)
     application.include_router(query_router)
     application.include_router(wiki_router)
     return application
