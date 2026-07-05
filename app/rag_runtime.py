@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from sqlalchemy.engine import make_url
 from app.config import Settings
 
 QueryMode = str
+logger = logging.getLogger(__name__)
 
 
 class RAGRuntimeError(RuntimeError):
@@ -163,12 +165,33 @@ class RAGRuntime:
 
     async def initialize(self) -> None:
         if self.settings.rag_runtime_disabled:
+            logger.info(
+                "rag_runtime_initialization_skipped",
+                extra={
+                    "tenant_id": self.tenant_id,
+                    "workspace": self.workspace,
+                    "reason": "disabled",
+                },
+            )
             raise RAGRuntimeDisabledError("RAG runtime is disabled by RAG_RUNTIME_DISABLED=true")
 
         async with self._lock:
             if self._initialized:
                 return
 
+            logger.info(
+                "rag_runtime_initializing",
+                extra={
+                    "tenant_id": self.tenant_id,
+                    "workspace": self.workspace,
+                    "storages": {
+                        "kv": self.settings.lightrag_kv_storage,
+                        "vector": self.settings.lightrag_vector_storage,
+                        "graph": self.settings.lightrag_graph_storage,
+                        "doc_status": self.settings.lightrag_doc_status_storage,
+                    },
+                },
+            )
             self._apply_package_environment()
 
             try:
@@ -230,6 +253,14 @@ class RAGRuntime:
                     )
 
             self._initialized = True
+            logger.info(
+                "rag_runtime_initialized",
+                extra={
+                    "tenant_id": self.tenant_id,
+                    "workspace": self.workspace,
+                    "embedding_dim": self.settings.embedding_dim,
+                },
+            )
 
     async def query(
         self,

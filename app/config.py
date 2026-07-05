@@ -14,6 +14,8 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SERVICE_NAME", "APP_NAME"),
     )
     log_level: str = "INFO"
+    health_check_timeout_seconds: float = Field(default=1.0, gt=0)
+    health_check_s3: bool = False
 
     app_database_url: str = Field(
         default="postgresql+asyncpg://localhost/rag",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ import boto3  # type: ignore[import-untyped]
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 
 from app.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class S3AssetStoreError(RuntimeError):
@@ -83,6 +86,12 @@ class S3AssetStore:
             if not self._bucket_exists(bucket):
                 self._create_bucket(bucket)
 
+    def check_buckets(self) -> dict[str, bool]:
+        return {
+            self.settings.s3_bucket_raw: self._bucket_exists(self.settings.s3_bucket_raw),
+            self.settings.s3_bucket_assets: self._bucket_exists(self.settings.s3_bucket_assets),
+        }
+
     def upload_raw_document(
         self,
         local_path: str | Path,
@@ -96,6 +105,17 @@ class S3AssetStore:
         key = self.raw_document_key(path, tenant_id, source_id)
         content_type = self._content_type(path)
         self._upload_file(path, bucket, key, content_type)
+        logger.info(
+            "s3_raw_document_uploaded",
+            extra={
+                "tenant_id": tenant_id,
+                "source_id": source_id,
+                "bucket": bucket,
+                "key": key,
+                "content_type": content_type,
+                "size_bytes": path.stat().st_size,
+            },
+        )
 
         return RawUploadResult(
             bucket=bucket,
@@ -141,6 +161,15 @@ class S3AssetStore:
                 )
             )
 
+        logger.info(
+            "s3_output_tree_uploaded",
+            extra={
+                "tenant_id": tenant_id,
+                "source_id": source_id,
+                "bucket": bucket,
+                "asset_count": len(results),
+            },
+        )
         return results
 
     def public_asset_url(self, bucket: str, key: str) -> str:

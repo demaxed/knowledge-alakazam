@@ -8,6 +8,9 @@ from sqlalchemy.engine import make_url
 def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENV", "test")
     monkeypatch.setenv("SERVICE_NAME", "knowledge-test")
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("HEALTH_CHECK_TIMEOUT_SECONDS", "2.5")
+    monkeypatch.setenv("HEALTH_CHECK_S3", "true")
     monkeypatch.setenv("APP_DATABASE_URL", "postgresql+asyncpg://rag:secret@db:5432/rag")
     monkeypatch.setenv("RAG_WORKING_DIR", "/tmp/rag")
     monkeypatch.setenv("RAG_OUTPUT_DIR", "/tmp/output")
@@ -45,6 +48,9 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert settings.env == "test"
     assert settings.service_name == "knowledge-test"
+    assert settings.log_level == "DEBUG"
+    assert settings.health_check_timeout_seconds == 2.5
+    assert settings.health_check_s3 is True
     assert settings.app_database_url == "postgresql+asyncpg://rag:secret@db:5432/rag"
     assert settings.rag_working_dir == Path("/tmp/rag")
     assert settings.rag_output_dir == Path("/tmp/output")

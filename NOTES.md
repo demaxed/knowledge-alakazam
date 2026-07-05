@@ -29,7 +29,7 @@ Keep entries short and factual. Do not store secrets in this file.
 
 - Removed the compatibility `AGENT.md` file at the project owner's request.
 - Kept `AGENTS.md` as the only Codex instruction file and removed the synchronization note that referred to `AGENT.md`.
-- Verification passed: `uv run ruff check .` and `uv run pytest`.
+- Verification passed: `uv run ruff check .`, `uv run pytest`, and `uv run mypy app wiki worker`.
 
 ## 2026-07-06 - Task 9: llm-wiki Compiler Skeleton
 
@@ -40,3 +40,13 @@ Keep entries short and factual. Do not store secrets in this file.
 - Added compiler tests for successful source compilation, fallback raw-metadata provenance, failed job persistence, and the compile API.
 - Verification passed: `uv run ruff check .`, `uv run pytest`, and `uv run mypy app wiki worker`.
 - Follow-up: the compiler still relies on the RAG runtime's returned metadata shape; richer page planning and citation extraction should be added once real LightRAG/RAG-Anything evidence payloads are observed.
+
+## 2026-07-06 - Task 10: Validation and Observability
+
+- Added `wiki/validators.py` with broken wikilink validation, unsupported-claim and stale-page skeleton checks, duplicate slug/title validation, and a validation service that persists `wiki_validation_result` rows.
+- Extended `WikiRepository` with validation result persistence/listing plus page and claim lookup helpers needed by validators.
+- Added `POST /wiki/pages/{slug}/validate` and `GET /wiki/pages/{slug}/validation-results` with response schemas.
+- Added structured JSON logging, request ID middleware, richer `/health` output, DB reachability checks, optional S3 health checks, RAG runtime status, ingest lifecycle logs, runtime initialization logs, and S3 upload count logs.
+- Updated `.env.example`, README, health/config tests, and wiki validation tests.
+- Verification passed: `uv run ruff check .` and `uv run pytest`.
+- Follow-up: unsupported-claim validation is still rule-based on `support_status`; deeper evidence verification should be added after real RAG evidence payloads and citation metadata are observed.

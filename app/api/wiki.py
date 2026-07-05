@@ -5,9 +5,10 @@ from typing import Annotated, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from wiki.compiler import WikiCompiledPage, WikiCompiler, WikiCompileResult
-from wiki.models import WikiRevision
+from wiki.models import WikiRevision, WikiValidationResult
 from wiki.repository import WikiBacklink, WikiRepository
 from wiki.service import WikiPageDetail, WikiPageNotFoundError, WikiService
+from wiki.validators import WikiValidationRun, WikiValidationService
 
 from app.api.query import get_rag_runtime_registry
 from app.db import get_db_session
@@ -28,6 +29,9 @@ from app.schemas import (
     WikiPageResponse,
     WikiRevisionCreateRequest,
     WikiRevisionResponse,
+    WikiValidationResponse,
+    WikiValidationResultResponse,
+    WikiValidationSeverity,
 )
 
 router = APIRouter(prefix="/wiki", tags=["wiki"])
@@ -43,6 +47,12 @@ async def get_wiki_service(
     repository: Annotated[WikiRepository, Depends(get_wiki_repository)],
 ) -> WikiService:
     return WikiService(repository)
+
+
+async def get_wiki_validation_service(
+    repository: Annotated[WikiRepository, Depends(get_wiki_repository)],
+) -> WikiValidationService:
+    return WikiValidationService(repository)
 
 
 @router.post(
@@ -184,6 +194,38 @@ async def list_backlinks(
     return [_backlink_response(backlink) for backlink in backlinks]
 
 
+@router.post("/pages/{slug}/validate", response_model=WikiValidationResponse)
+async def validate_page(
+    slug: str,
+    tenant_id: Annotated[str, Query(min_length=1)],
+    service: Annotated[WikiValidationService, Depends(get_wiki_validation_service)],
+) -> WikiValidationResponse:
+    try:
+        result = await service.validate_page(tenant_id=tenant_id, slug=slug)
+    except WikiPageNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return _validation_response(result)
+
+
+@router.get("/pages/{slug}/validation-results", response_model=WikiValidationResponse)
+async def list_validation_results(
+    slug: str,
+    tenant_id: Annotated[str, Query(min_length=1)],
+    service: Annotated[WikiValidationService, Depends(get_wiki_validation_service)],
+) -> WikiValidationResponse:
+    try:
+        result = await service.list_page_results(tenant_id=tenant_id, slug=slug)
+    except WikiPageNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return _validation_response(result)
+
+
 def _page_response(detail: WikiPageDetail) -> WikiPageResponse:
     page = detail.page
     return WikiPageResponse(
@@ -251,6 +293,31 @@ def _compiled_page_response(page: WikiCompiledPage) -> WikiCompiledPageResponse:
     )
 
 
+def _validation_response(result: WikiValidationRun) -> WikiValidationResponse:
+    return WikiValidationResponse(
+        tenant_id=result.page.tenant_id,
+        slug=result.page.slug,
+        page_id=result.page.id,
+        revision_id=result.revision.id,
+        result_count=len(result.results),
+        results=[_validation_result_response(row) for row in result.results],
+    )
+
+
+def _validation_result_response(row: WikiValidationResult) -> WikiValidationResultResponse:
+    return WikiValidationResultResponse(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        page_id=row.page_id,
+        revision_id=row.revision_id,
+        validator_name=row.validator_name,
+        severity=_validation_severity(row.severity),
+        message=row.message,
+        metadata=row.metadata_ or {},
+        created_at=row.created_at,
+    )
+
+
 def _compile_topic_query(topic: str, source_id: str | None) -> str:
     if source_id:
         return (
@@ -268,3 +335,10 @@ def _compile_job_status(status_value: str) -> WikiCompileJobStatus:
     if status_value not in allowed:
         raise ValueError(f"Unknown wiki compile job status: {status_value}")
     return cast(WikiCompileJobStatus, status_value)
+
+
+def _validation_severity(value: str) -> WikiValidationSeverity:
+    allowed = {"info", "warning", "error"}
+    if value not in allowed:
+        raise ValueError(f"Unknown wiki validation severity: {value}")
+    return cast(WikiValidationSeverity, value)

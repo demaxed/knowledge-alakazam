@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 from collections.abc import Sequence
 from contextlib import asynccontextmanager, suppress
@@ -17,6 +18,7 @@ from app.config import Settings
 from app.s3_assets import AssetUploadResult, RawUploadResult, S3AssetStore
 
 IngestJobStatus = Literal["pending", "processing", "succeeded", "failed"]
+logger = logging.getLogger(__name__)
 
 
 class IngestError(RuntimeError):
@@ -237,6 +239,10 @@ class DocumentIngestService:
             raw_key=prepared.raw_key,
             status="pending",
         )
+        logger.info(
+            "ingest_job_pending",
+            extra={"tenant_id": prepared.tenant_id, "source_id": prepared.source_id},
+        )
 
         try:
             raw_upload = self.asset_store.upload_raw_document(
@@ -254,6 +260,14 @@ class DocumentIngestService:
             raw_bucket=raw_upload.bucket,
             raw_key=raw_upload.key,
             status="pending",
+        )
+        logger.info(
+            "ingest_job_pending_uploaded",
+            extra={
+                "tenant_id": prepared.tenant_id,
+                "source_id": prepared.source_id,
+                "job_id": job.id,
+            },
         )
         return self._result(
             prepared=prepared,
@@ -286,10 +300,18 @@ class DocumentIngestService:
             raw_key=prepared.raw_key,
             status="pending",
         )
+        logger.info(
+            "ingest_job_pending",
+            extra={"tenant_id": prepared.tenant_id, "source_id": prepared.source_id},
+        )
 
         raw_upload: RawUploadResult | None = None
         try:
             await job_repository.mark_processing(prepared.tenant_id, prepared.source_id)
+            logger.info(
+                "ingest_job_processing",
+                extra={"tenant_id": prepared.tenant_id, "source_id": prepared.source_id},
+            )
             raw_upload = self.asset_store.upload_raw_document(
                 prepared.staged_path,
                 tenant_id=prepared.tenant_id,
@@ -300,6 +322,15 @@ class DocumentIngestService:
             job = await job_repository.mark_succeeded(
                 prepared.tenant_id,
                 prepared.source_id,
+            )
+            logger.info(
+                "ingest_job_succeeded",
+                extra={
+                    "tenant_id": prepared.tenant_id,
+                    "source_id": prepared.source_id,
+                    "job_id": job.id,
+                    "asset_count": len(assets),
+                },
             )
         except Exception as exc:
             await self._mark_failed(prepared, exc)
@@ -379,6 +410,14 @@ class DocumentIngestService:
                 prepared.tenant_id,
                 prepared.source_id,
                 _error_message(exc),
+            )
+            logger.info(
+                "ingest_job_failed",
+                extra={
+                    "tenant_id": prepared.tenant_id,
+                    "source_id": prepared.source_id,
+                    "error_type": exc.__class__.__name__,
+                },
             )
 
     def _require_job_repository(self) -> IngestJobRepositoryProtocol:

@@ -2,10 +2,10 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 9 adds the first llm-wiki compiler skeleton. The compiler queries the tenant RAG
-runtime for evidence, creates or updates Markdown wiki pages through `WikiService`,
-stores source-backed claims and provenance rows, and records compile job state in
-PostgreSQL.
+Task 10 adds validation and basic observability. The API now validates wiki pages,
+persists validation results in PostgreSQL, emits structured application logs with
+request IDs, and exposes an operational health response with DB, optional S3, and RAG
+runtime status.
 
 ## Requirements
 
@@ -39,6 +39,11 @@ Check the health endpoint:
 ```bash
 curl http://127.0.0.1:8000/health
 ```
+
+The response includes the app status, service/environment labels, DB reachability,
+optional S3 bucket reachability, and whether the RAG runtime is enabled or disabled.
+Set `HEALTH_CHECK_S3=true` to make `/health` check the configured raw and asset
+buckets; it is disabled by default so local development does not block on MinIO.
 
 Query the RAG runtime after enabling it and configuring model credentials:
 
@@ -83,6 +88,13 @@ Compile a wiki page from indexed evidence:
 curl -X POST http://127.0.0.1:8000/wiki/compile \
   -H 'content-type: application/json' \
   -d '{"tenant_id":"default","source_id":"example-report","topic":"Main findings","target_slug":"main-findings"}'
+```
+
+Validate a wiki page and read the saved validation results:
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/wiki/pages/main-findings/validate?tenant_id=default'
+curl 'http://127.0.0.1:8000/wiki/pages/main-findings/validation-results?tenant_id=default'
 ```
 
 Run checks:
@@ -135,6 +147,44 @@ quotes, those fields are copied to `wiki_claim_source`. If the runtime returns o
 answer plus unstructured metadata, the compiler stores the best available
 `source_id` fallback and preserves the raw metadata in `wiki_claim_source.locator`
 with `structured_source_ids_available=false`.
+
+## llm-wiki Validation
+
+`POST /wiki/pages/{slug}/validate?tenant_id=...` runs the current validator set against
+the page's current revision and replaces saved validation rows for that revision.
+`GET /wiki/pages/{slug}/validation-results?tenant_id=...` returns the saved rows for
+the current revision.
+
+Current validators:
+
+- `broken_wikilinks`: reports Markdown `[[...]]` targets that do not resolve to a page
+  in the same tenant.
+- `unsupported_claims`: skeleton claim support check that flags current-revision claims
+  whose `support_status` is `unknown` or `unsupported`.
+- `stale_page`: skeleton freshness check that reports pages not updated in the default
+  90-day window.
+- `duplicate_slug_title`: detects duplicate titles and keeps a defensive duplicate-slug
+  check even though the database enforces unique `(tenant_id, slug)`.
+
+The validation layer stores results in `wiki_validation_result`. It does not call an LLM
+or fabricate evidence; deeper claim verification can be added once the RAG evidence
+payloads are stable.
+
+## Observability
+
+Application logs are emitted as JSON for app-owned events. Each HTTP request receives
+an `X-Request-ID` response header; an incoming `X-Request-ID` header is preserved.
+Request logs include method, path, status, duration, and request ID, but not headers,
+request bodies, or secrets.
+
+The service also logs:
+
+- ingest job lifecycle events: pending, processing, succeeded, failed
+- RAG runtime initialization and skipped initialization when disabled
+- S3 raw document uploads and extracted asset upload counts
+
+Secret-like log fields are redacted by the JSON formatter. Avoid adding raw settings,
+headers, credentials, or model provider payloads to log extras.
 
 ## Docker Compose
 
@@ -208,6 +258,9 @@ Copy `.env.example` to `.env` for local overrides. Do not commit secrets.
 Important variables:
 
 - `ENV`, `SERVICE_NAME`: runtime environment label and FastAPI service title.
+- `LOG_LEVEL`: application log level.
+- `HEALTH_CHECK_TIMEOUT_SECONDS`: timeout for DB and optional S3 checks in `/health`.
+- `HEALTH_CHECK_S3`: when `true`, `/health` checks raw and asset bucket reachability.
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: PostgreSQL database and credentials.
 - `APP_DATABASE_URL`: local non-container database URL. The Compose app overrides this to use the `postgres` service hostname.
 - `RAG_WORKING_DIR`, `RAG_OUTPUT_DIR`, `RAG_INPUT_DIR`: runtime paths for LightRAG state, parsed output, and ingest inputs.

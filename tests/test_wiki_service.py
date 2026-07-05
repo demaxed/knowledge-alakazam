@@ -9,8 +9,15 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from wiki.models import WikiClaim, WikiClaimSource, WikiLink, WikiPage, WikiRevision
-from wiki.repository import WikiBacklink
+from wiki.models import (
+    WikiClaim,
+    WikiClaimSource,
+    WikiLink,
+    WikiPage,
+    WikiRevision,
+    WikiValidationResult,
+)
+from wiki.repository import WikiBacklink, WikiValidationResultInput
 from wiki.service import (
     ClaimSourceInput,
     WikiService,
@@ -38,12 +45,35 @@ class InMemoryWikiRepository:
         self.links: list[WikiLink] = []
         self.claims: list[WikiClaim] = []
         self.claim_sources: list[WikiClaimSource] = []
+        self.validation_results: list[WikiValidationResult] = []
 
     def transaction(self) -> AbstractAsyncContextManager[None]:
         return NoopTransaction()
 
     async def get_page_by_slug(self, tenant_id: str, slug: str) -> WikiPage | None:
         return self.pages.get((tenant_id, slug))
+
+    async def list_pages_by_slugs(self, tenant_id: str, slugs: Sequence[str]) -> list[WikiPage]:
+        requested = set(slugs)
+        return sorted(
+            [
+                page
+                for (page_tenant_id, page_slug), page in self.pages.items()
+                if page_tenant_id == tenant_id and page_slug in requested
+            ],
+            key=lambda page: page.slug,
+        )
+
+    async def list_pages_by_title(self, tenant_id: str, title: str) -> list[WikiPage]:
+        normalized_title = title.lower()
+        return sorted(
+            [
+                page
+                for (page_tenant_id, _slug), page in self.pages.items()
+                if page_tenant_id == tenant_id and page.title.lower() == normalized_title
+            ],
+            key=lambda page: page.slug,
+        )
 
     async def create_page(
         self,
@@ -225,6 +255,71 @@ class InMemoryWikiRepository:
             backlinks.append(WikiBacklink(link=link, page=page))
 
         return sorted(backlinks, key=lambda item: (item.page.title, item.page.slug))
+
+    async def list_claims_for_revision(
+        self,
+        *,
+        tenant_id: str,
+        page_id: UUID,
+        revision_id: UUID,
+    ) -> list[WikiClaim]:
+        return [
+            claim
+            for claim in self.claims
+            if claim.tenant_id == tenant_id
+            and claim.page_id == page_id
+            and claim.revision_id == revision_id
+        ]
+
+    async def replace_validation_results(
+        self,
+        *,
+        tenant_id: str,
+        page_id: UUID,
+        revision_id: UUID,
+        results: Sequence[WikiValidationResultInput],
+    ) -> list[WikiValidationResult]:
+        self.validation_results = [
+            result
+            for result in self.validation_results
+            if not (
+                result.tenant_id == tenant_id
+                and result.page_id == page_id
+                and result.revision_id == revision_id
+            )
+        ]
+
+        created = [
+            WikiValidationResult(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                page_id=page_id,
+                revision_id=revision_id,
+                validator_name=result.validator_name,
+                severity=result.severity,
+                message=result.message,
+                metadata_=result.metadata or {},
+                created_at=_now(),
+            )
+            for result in results
+        ]
+        self.validation_results.extend(created)
+        return created
+
+    async def list_validation_results(
+        self,
+        *,
+        tenant_id: str,
+        page_id: UUID,
+        revision_id: UUID | None = None,
+    ) -> list[WikiValidationResult]:
+        return [
+            result
+            for result in self.validation_results
+            if result.tenant_id == tenant_id
+            and result.page_id == page_id
+            and (revision_id is None or result.revision_id == revision_id)
+        ]
 
     def _get_page_by_id(self, page_id: UUID) -> WikiPage:
         for page in self.pages.values():

@@ -7,13 +7,22 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class HealthComponent(BaseModel):
+    status: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class HealthResponse(BaseModel):
     status: str
+    service: str
+    environment: str
+    components: dict[str, HealthComponent]
 
 
 QueryMode = Literal["local", "global", "hybrid", "naive", "mix", "bypass"]
 IngestJobStatus = Literal["pending", "processing", "succeeded", "failed"]
 WikiCompileJobStatus = Literal["pending", "processing", "succeeded", "failed"]
+WikiValidationSeverity = Literal["info", "warning", "error"]
 
 
 class QueryRequest(BaseModel):
@@ -118,3 +127,24 @@ class WikiCompileResponse(BaseModel):
     status: WikiCompileJobStatus
     error: str | None
     pages: list[WikiCompiledPageResponse]
+
+
+class WikiValidationResultResponse(BaseModel):
+    id: UUID
+    tenant_id: str
+    page_id: UUID
+    revision_id: UUID
+    validator_name: str
+    severity: WikiValidationSeverity
+    message: str
+    metadata: dict[str, Any]
+    created_at: datetime
+
+
+class WikiValidationResponse(BaseModel):
+    tenant_id: str
+    slug: str
+    page_id: UUID
+    revision_id: UUID
+    result_count: int
+    results: list[WikiValidationResultResponse]

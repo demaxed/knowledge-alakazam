@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -17,6 +17,7 @@ from wiki.models import (
     WikiLink,
     WikiPage,
     WikiRevision,
+    WikiValidationResult,
 )
 
 
@@ -24,6 +25,14 @@ from wiki.models import (
 class WikiBacklink:
     link: WikiLink
     page: WikiPage
+
+
+@dataclass(frozen=True, slots=True)
+class WikiValidationResultInput:
+    validator_name: str
+    severity: str
+    message: str
+    metadata: dict[str, Any] | None = None
 
 
 def _dedupe_slugs(to_slugs: Iterable[str]) -> list[str]:
@@ -60,6 +69,31 @@ class WikiRepository:
             )
         )
         return result.one_or_none()
+
+    async def list_pages_by_slugs(self, tenant_id: str, slugs: Sequence[str]) -> list[WikiPage]:
+        if not slugs:
+            return []
+
+        result = await self.session.scalars(
+            select(WikiPage)
+            .where(
+                WikiPage.tenant_id == tenant_id,
+                WikiPage.slug.in_(list(slugs)),
+            )
+            .order_by(WikiPage.slug)
+        )
+        return list(result.all())
+
+    async def list_pages_by_title(self, tenant_id: str, title: str) -> list[WikiPage]:
+        result = await self.session.scalars(
+            select(WikiPage)
+            .where(
+                WikiPage.tenant_id == tenant_id,
+                func.lower(WikiPage.title) == title.lower(),
+            )
+            .order_by(WikiPage.slug)
+        )
+        return list(result.all())
 
     async def create_page(
         self,
@@ -251,6 +285,81 @@ class WikiRepository:
             .order_by(WikiPage.title, WikiPage.slug)
         )
         return [WikiBacklink(link=link, page=page) for link, page in result.all()]
+
+    async def list_claims_for_revision(
+        self,
+        *,
+        tenant_id: str,
+        page_id: UUID,
+        revision_id: UUID,
+    ) -> list[WikiClaim]:
+        result = await self.session.scalars(
+            select(WikiClaim)
+            .where(
+                WikiClaim.tenant_id == tenant_id,
+                WikiClaim.page_id == page_id,
+                WikiClaim.revision_id == revision_id,
+            )
+            .order_by(WikiClaim.created_at, WikiClaim.id)
+        )
+        return list(result.all())
+
+    async def replace_validation_results(
+        self,
+        *,
+        tenant_id: str,
+        page_id: UUID,
+        revision_id: UUID,
+        results: Sequence[WikiValidationResultInput],
+    ) -> list[WikiValidationResult]:
+        await self.session.execute(
+            delete(WikiValidationResult).where(
+                WikiValidationResult.tenant_id == tenant_id,
+                WikiValidationResult.page_id == page_id,
+                WikiValidationResult.revision_id == revision_id,
+            )
+        )
+
+        rows = [
+            WikiValidationResult(
+                tenant_id=tenant_id,
+                page_id=page_id,
+                revision_id=revision_id,
+                validator_name=result.validator_name,
+                severity=result.severity,
+                message=result.message,
+                metadata_=result.metadata or {},
+            )
+            for result in results
+        ]
+        self.session.add_all(rows)
+        await self.session.flush()
+        return rows
+
+    async def list_validation_results(
+        self,
+        *,
+        tenant_id: str,
+        page_id: UUID,
+        revision_id: UUID | None = None,
+    ) -> list[WikiValidationResult]:
+        conditions = [
+            WikiValidationResult.tenant_id == tenant_id,
+            WikiValidationResult.page_id == page_id,
+        ]
+        if revision_id is not None:
+            conditions.append(WikiValidationResult.revision_id == revision_id)
+
+        result = await self.session.scalars(
+            select(WikiValidationResult)
+            .where(*conditions)
+            .order_by(
+                WikiValidationResult.created_at.desc(),
+                WikiValidationResult.validator_name,
+                WikiValidationResult.id,
+            )
+        )
+        return list(result.all())
 
     async def create_compile_job(
         self,
