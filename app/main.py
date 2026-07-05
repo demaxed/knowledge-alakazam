@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.wiki import router as wiki_router
 from app.config import Settings, get_settings
 from app.db import dispose_db, init_db
 
@@ -23,6 +24,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(title=resolved_settings.service_name, lifespan=lifespan)
     application.state.settings = resolved_settings
     application.include_router(health_router)
+    application.include_router(wiki_router)
     return application
 
 
