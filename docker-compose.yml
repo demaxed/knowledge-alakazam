@@ -1,0 +1,107 @@
+name: knowledge-alakazam
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: db/Dockerfile.postgres
+      args:
+        PGVECTOR_VERSION: ${PGVECTOR_VERSION:-v0.8.4}
+    image: knowledge-alakazam-postgres:pg16-age-pgvector
+    env_file:
+      - .env.example
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    env_file:
+      - .env.example
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  create-buckets:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env.example
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET_RAW: ${S3_BUCKET_RAW:-rag-raw}
+      S3_BUCKET_ASSETS: ${S3_BUCKET_ASSETS:-rag-assets}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing "local/$${S3_BUCKET_RAW}"
+        mc mb --ignore-existing "local/$${S3_BUCKET_ASSETS}"
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_RAG_EXTRAS: ${INSTALL_RAG_EXTRAS:-false}
+    image: knowledge-alakazam-app:local
+    env_file:
+      - .env.example
+    environment:
+      ENV: docker
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag}@postgres:5432/${POSTGRES_DB:-rag}
+      RAG_WORKING_DIR: /data/rag_storage
+      RAG_OUTPUT_DIR: /data/output
+      RAG_INPUT_DIR: /data/inputs
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET_RAW: ${S3_BUCKET_RAW:-rag-raw}
+      S3_BUCKET_ASSETS: ${S3_BUCKET_ASSETS:-rag-assets}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      create-buckets:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-rag-storage:/data/rag_storage
+      - app-output:/data/output
+      - app-inputs:/data/inputs
+
+volumes:
+  postgres-data:
+  minio-data:
+  app-rag-storage:
+  app-output:
+  app-inputs:

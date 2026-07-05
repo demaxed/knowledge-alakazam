@@ -2,7 +2,7 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 0 bootstraps the project only: FastAPI, configuration, dependency management, and a health endpoint. RAG runtime, ingest, PostgreSQL models, S3 asset handling, Docker Compose, and migrations are intentionally left for later tasks.
+Task 2 adds the typed application configuration and async SQLAlchemy database lifecycle around the FastAPI health endpoint. RAG runtime, ingest, PostgreSQL models, S3 asset handling code, and migrations are intentionally left for later tasks.
 
 ## Requirements
 
@@ -46,12 +46,56 @@ uv run pytest
 
 ## Docker Compose
 
-Docker Compose is scheduled for Task 1. Once `docker-compose.yml` exists, the intended local production-like startup command is:
+The Compose stack starts:
+
+- FastAPI app on `http://127.0.0.1:8080`
+- PostgreSQL database `rag` with user `rag`
+- PostgreSQL extensions `vector` and `age`
+- MinIO S3 API on `http://127.0.0.1:9000`
+- MinIO console on `http://127.0.0.1:9001`
+- Buckets `rag-raw` and `rag-assets`
+
+Start the stack:
 
 ```bash
 docker compose up --build
 ```
 
+Check the app health endpoint:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+Open the MinIO console at `http://127.0.0.1:9001`. The local default credentials are `minioadmin` / `minioadmin`; change them outside local development.
+
+PostgreSQL is built from the Apache AGE PostgreSQL 16 image and compiles pgvector into the same image. The init script at `db/init/001_extensions.sql` creates both extensions when the database volume is initialized for the first time. If you change extension initialization while keeping an existing local database volume, recreate the volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+By default the app image installs only the base API dependencies. Set `INSTALL_RAG_EXTRAS=true` when the RAG runtime tasks need the optional RAG-Anything and LightRAG packages inside the container:
+
+```bash
+INSTALL_RAG_EXTRAS=true docker compose build app
+```
+
 ## Configuration
 
 Copy `.env.example` to `.env` for local overrides. Do not commit secrets.
+
+Important variables:
+
+- `ENV`, `SERVICE_NAME`: runtime environment label and FastAPI service title.
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: PostgreSQL database and credentials.
+- `APP_DATABASE_URL`: local non-container database URL. The Compose app overrides this to use the `postgres` service hostname.
+- `RAG_WORKING_DIR`, `RAG_OUTPUT_DIR`, `RAG_INPUT_DIR`: runtime paths for LightRAG state, parsed output, and ingest inputs.
+- `PARSER`, `PARSE_METHOD`: parser selection knobs for the later RAG-Anything ingest pipeline.
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `VISION_MODEL`, `EMBEDDING_MODEL`: model provider configuration for later runtime integration.
+- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`: MinIO console and S3 credentials.
+- `S3_ENDPOINT_URL`: local non-container S3 endpoint. The Compose app overrides this to use the `minio` service hostname.
+- `S3_BUCKET_RAW`, `S3_BUCKET_ASSETS`: raw document and extracted asset buckets.
+- `LIGHTRAG_KV_STORAGE`, `LIGHTRAG_VECTOR_STORAGE`, `LIGHTRAG_GRAPH_STORAGE`, `LIGHTRAG_DOC_STATUS_STORAGE`: LightRAG storage backend selectors.
+- `EMBEDDING_DIM`: embedding dimension for the index. Treat this value as immutable once an index exists.
