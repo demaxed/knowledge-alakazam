@@ -2,7 +2,7 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 3 adds the Alembic migration baseline and SQLAlchemy models for the PostgreSQL-backed llm-wiki canonical store. RAG runtime, ingest execution, and S3 asset handling code are intentionally left for later tasks.
+Task 5 adds the S3-compatible asset store for raw documents and parsed output assets. RAG runtime and ingest execution are intentionally left for later tasks.
 
 ## Requirements
 
