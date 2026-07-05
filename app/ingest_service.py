@@ -210,7 +210,7 @@ class DocumentIngestService:
         settings: Settings,
         asset_store: AssetStoreProtocol | None = None,
         runtime_registry: RuntimeRegistryProtocol | None = None,
-        job_repository: IngestJobRepositoryProtocol,
+        job_repository: IngestJobRepositoryProtocol | None = None,
     ) -> None:
         self.settings = settings
         self.asset_store = asset_store or S3AssetStore(settings=settings)
@@ -224,12 +224,13 @@ class DocumentIngestService:
         tenant_id: str,
         source_id: str | None = None,
     ) -> IngestResult:
+        job_repository = self._require_job_repository()
         prepared = self.prepare_document(
             local_path=local_path,
             tenant_id=tenant_id,
             source_id=source_id,
         )
-        await self.job_repository.upsert_job(
+        await job_repository.upsert_job(
             tenant_id=prepared.tenant_id,
             source_id=prepared.source_id,
             raw_bucket=prepared.raw_bucket,
@@ -247,7 +248,7 @@ class DocumentIngestService:
             await self._mark_failed(prepared, exc)
             raise
 
-        job = await self.job_repository.upsert_job(
+        job = await job_repository.upsert_job(
             tenant_id=prepared.tenant_id,
             source_id=prepared.source_id,
             raw_bucket=raw_upload.bucket,
@@ -272,12 +273,13 @@ class DocumentIngestService:
         if self.runtime_registry is None:
             raise IngestError("RAG runtime registry is not configured")
 
+        job_repository = self._require_job_repository()
         prepared = self.prepare_document(
             local_path=local_path,
             tenant_id=tenant_id,
             source_id=source_id,
         )
-        await self.job_repository.upsert_job(
+        await job_repository.upsert_job(
             tenant_id=prepared.tenant_id,
             source_id=prepared.source_id,
             raw_bucket=prepared.raw_bucket,
@@ -287,27 +289,15 @@ class DocumentIngestService:
 
         raw_upload: RawUploadResult | None = None
         try:
-            await self.job_repository.mark_processing(prepared.tenant_id, prepared.source_id)
+            await job_repository.mark_processing(prepared.tenant_id, prepared.source_id)
             raw_upload = self.asset_store.upload_raw_document(
                 prepared.staged_path,
                 tenant_id=prepared.tenant_id,
                 source_id=prepared.source_id,
             )
 
-            prepared.output_dir.mkdir(parents=True, exist_ok=True)
-            runtime = await self.runtime_registry.get(prepared.tenant_id)
-            await runtime.process_document_complete(
-                file_path=prepared.staged_path,
-                output_dir=prepared.output_dir,
-                source_id=prepared.source_id,
-                file_name=prepared.staged_path.name,
-            )
-            assets = self.asset_store.upload_output_tree(
-                self.settings.rag_output_dir,
-                tenant_id=prepared.tenant_id,
-                source_id=prepared.source_id,
-            )
-            job = await self.job_repository.mark_succeeded(
+            assets = await self.process_prepared_document(prepared)
+            job = await job_repository.mark_succeeded(
                 prepared.tenant_id,
                 prepared.source_id,
             )
@@ -321,6 +311,27 @@ class DocumentIngestService:
             assets=assets,
             status="succeeded",
             job_id=job.id,
+        )
+
+    async def process_prepared_document(
+        self,
+        prepared: PreparedDocument,
+    ) -> list[AssetUploadResult]:
+        if self.runtime_registry is None:
+            raise IngestError("RAG runtime registry is not configured")
+
+        prepared.output_dir.mkdir(parents=True, exist_ok=True)
+        runtime = await self.runtime_registry.get(prepared.tenant_id)
+        await runtime.process_document_complete(
+            file_path=prepared.staged_path,
+            output_dir=prepared.output_dir,
+            source_id=prepared.source_id,
+            file_name=prepared.staged_path.name,
+        )
+        return self.asset_store.upload_output_tree(
+            self.settings.rag_output_dir,
+            tenant_id=prepared.tenant_id,
+            source_id=prepared.source_id,
         )
 
     def prepare_document(
@@ -360,12 +371,20 @@ class DocumentIngestService:
         )
 
     async def _mark_failed(self, prepared: PreparedDocument, exc: Exception) -> None:
+        if self.job_repository is None:
+            return
+
         with suppress(Exception):
             await self.job_repository.mark_failed(
                 prepared.tenant_id,
                 prepared.source_id,
                 _error_message(exc),
             )
+
+    def _require_job_repository(self) -> IngestJobRepositoryProtocol:
+        if self.job_repository is None:
+            raise IngestError("Ingest job repository is not configured")
+        return self.job_repository
 
     @staticmethod
     def _result(

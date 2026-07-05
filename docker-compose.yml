@@ -99,6 +99,39 @@ services:
       - app-output:/data/output
       - app-inputs:/data/inputs
 
+  worker:
+    profiles:
+      - worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_RAG_EXTRAS: ${INSTALL_RAG_EXTRAS:-false}
+    image: knowledge-alakazam-app:local
+    command: ["python", "-m", "worker.ingest_worker"]
+    env_file:
+      - .env.example
+    environment:
+      ENV: docker
+      APP_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag}@postgres:5432/${POSTGRES_DB:-rag}
+      RAG_WORKING_DIR: /data/rag_storage
+      RAG_OUTPUT_DIR: /data/output
+      RAG_INPUT_DIR: /data/inputs
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET_RAW: ${S3_BUCKET_RAW:-rag-raw}
+      S3_BUCKET_ASSETS: ${S3_BUCKET_ASSETS:-rag-assets}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      create-buckets:
+        condition: service_completed_successfully
+    volumes:
+      - app-rag-storage:/data/rag_storage
+      - app-output:/data/output
+      - app-inputs:/data/inputs
+
 volumes:
   postgres-data:
   minio-data:

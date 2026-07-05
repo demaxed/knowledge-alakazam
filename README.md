@@ -2,9 +2,10 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 7 adds the document ingest service and `/ingest` API. The endpoint stages uploads,
-stores raw documents in MinIO/S3, runs RAG-Anything in synchronous mode when enabled,
-uploads extracted assets, and records `ingest_job` status transitions in PostgreSQL.
+Task 8 adds the async ingest worker. The API can now create pending ingest jobs, and
+`worker.ingest_worker` claims them with PostgreSQL row locks, downloads raw documents
+from MinIO/S3, runs the ingest pipeline, uploads extracted assets, and persists success
+or failure back to PostgreSQL.
 
 ## Requirements
 
@@ -64,6 +65,18 @@ upload extracted assets, and mark the job `succeeded` or `failed`. With
 `INGEST_SYNC=false`, the endpoint stages and uploads the raw document, creates or
 updates a `pending` `ingest_job`, and returns HTTP 202 for a future worker.
 
+Run the async ingest worker locally:
+
+```bash
+uv run python -m worker.ingest_worker
+```
+
+The worker polls for pending jobs, claims one row at a time with
+`FOR UPDATE SKIP LOCKED`, marks it `processing`, downloads the raw object, runs the
+same ingest service pipeline, and marks the job `succeeded` or `failed`. The current
+schema does not store retry counters, so failed jobs remain failed until a retry policy
+and attempt columns are added in a later migration.
+
 Run checks:
 
 ```bash
@@ -108,6 +121,12 @@ Start the stack:
 
 ```bash
 docker compose up --build
+```
+
+Start the optional async worker alongside the stack:
+
+```bash
+docker compose --profile worker up --build
 ```
 
 Check the app health endpoint:
@@ -164,6 +183,7 @@ Important variables:
 - `RAG_WORKING_DIR`, `RAG_OUTPUT_DIR`, `RAG_INPUT_DIR`: runtime paths for LightRAG state, parsed output, and ingest inputs.
 - `PARSER`, `PARSE_METHOD`: parser selection knobs for the later RAG-Anything ingest pipeline.
 - `INGEST_SYNC`: when `true`, `/ingest` processes immediately; when `false`, it only creates a pending job after staging and raw upload.
+- `WORKER_POLL_INTERVAL_SECONDS`: seconds the ingest worker waits before polling again when no pending job is available.
 - `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `VISION_MODEL`, `EMBEDDING_MODEL`: model provider configuration for later runtime integration.
 - `RAG_RUNTIME_DISABLED`: keep `true` for tests or local boot without model credentials; set `false` to enable lazy runtime initialization.
 - `RAG_ENABLE_IMAGE_PROCESSING`, `RAG_ENABLE_TABLE_PROCESSING`, `RAG_ENABLE_EQUATION_PROCESSING`: RAG-Anything multimodal processor flags.

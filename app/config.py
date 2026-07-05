@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     parser: str = "mineru"
     parse_method: str = "auto"
     ingest_sync: bool = True
+    worker_poll_interval_seconds: float = Field(default=5.0, gt=0)
 
     openai_api_key: SecretStr | None = None
     openai_base_url: str | None = None

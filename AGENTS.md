@@ -22,6 +22,7 @@ This repository is implemented task by task. Keep changes small, atomic, and sui
 - Persist ingest pipeline failures to `ingest_job.error` when that model is introduced.
 - Inspect installed RAG-Anything and LightRAG package APIs before wiring runtime imports.
 - Document any discovered package/API mismatch in `README.md`.
+- After every implementation task, append concise task notes to `NOTES.md`. Include the task number/name, date, files changed, commands run, verification results, and any follow-up work or known limitations.
 
 ## Verification
 
@@ -37,5 +38,3 @@ If formatting is needed, run:
 ```bash
 uv run ruff format .
 ```
-
-`AGENT.md` is a compatibility copy requested by the project owner. Keep it synchronized with this file.
