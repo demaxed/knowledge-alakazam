@@ -1,16 +1,29 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from wiki.compiler import WikiCompiledPage, WikiCompiler, WikiCompileResult
 from wiki.models import WikiRevision
 from wiki.repository import WikiBacklink, WikiRepository
 from wiki.service import WikiPageDetail, WikiPageNotFoundError, WikiService
 
+from app.api.query import get_rag_runtime_registry
 from app.db import get_db_session
+from app.rag_runtime import (
+    RAGRuntimeConfigurationError,
+    RAGRuntimeDisabledError,
+    RAGRuntimeError,
+    RAGRuntimeRegistry,
+    RAGRuntimeUnavailableError,
+)
 from app.schemas import (
     WikiBacklinkResponse,
+    WikiCompiledPageResponse,
+    WikiCompileJobStatus,
+    WikiCompileRequest,
+    WikiCompileResponse,
     WikiPageCreateRequest,
     WikiPageResponse,
     WikiRevisionCreateRequest,
@@ -20,10 +33,16 @@ from app.schemas import (
 router = APIRouter(prefix="/wiki", tags=["wiki"])
 
 
-async def get_wiki_service(
+async def get_wiki_repository(
     session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> WikiRepository:
+    return WikiRepository(session)
+
+
+async def get_wiki_service(
+    repository: Annotated[WikiRepository, Depends(get_wiki_repository)],
 ) -> WikiService:
-    return WikiService(WikiRepository(session))
+    return WikiService(repository)
 
 
 @router.post(
@@ -52,6 +71,63 @@ async def create_page(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return _page_response(detail)
+
+
+@router.post("/compile", response_model=WikiCompileResponse)
+async def compile_wiki(
+    payload: WikiCompileRequest,
+    service: Annotated[WikiService, Depends(get_wiki_service)],
+    repository: Annotated[WikiRepository, Depends(get_wiki_repository)],
+    registry: Annotated[RAGRuntimeRegistry, Depends(get_rag_runtime_registry)],
+) -> WikiCompileResponse:
+    if not payload.source_id and not payload.topic:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either source_id or topic is required",
+        )
+
+    try:
+        runtime = await registry.get(payload.tenant_id)
+        compiler = WikiCompiler(
+            wiki_service=service,
+            compile_repository=repository,
+            rag_runtime=runtime,
+        )
+
+        if payload.topic:
+            result = await compiler.compile_topic_page(
+                tenant_id=payload.tenant_id,
+                topic=payload.topic,
+                evidence_query=_compile_topic_query(payload.topic, payload.source_id),
+                source_id=payload.source_id,
+                target_slug=payload.target_slug,
+            )
+        else:
+            if payload.source_id is None:
+                raise ValueError("source_id is required when topic is omitted")
+            result = await compiler.compile_source_to_pages(
+                tenant_id=payload.tenant_id,
+                source_id=payload.source_id,
+                target_slug=payload.target_slug,
+            )
+    except (
+        RAGRuntimeDisabledError,
+        RAGRuntimeConfigurationError,
+        RAGRuntimeUnavailableError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RAGRuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+    return _compile_response(result)
 
 
 @router.get("/pages/{slug}", response_model=WikiPageResponse)
@@ -149,3 +225,46 @@ def _backlink_response(backlink: WikiBacklink) -> WikiBacklinkResponse:
         link_type=backlink.link.link_type,
         created_at=backlink.link.created_at,
     )
+
+
+def _compile_response(result: WikiCompileResult) -> WikiCompileResponse:
+    job = result.job
+    return WikiCompileResponse(
+        job_id=job.id,
+        tenant_id=job.tenant_id,
+        source_id=job.source_id,
+        target_slug=job.target_slug,
+        status=_compile_job_status(job.status),
+        error=job.error,
+        pages=[_compiled_page_response(page) for page in result.pages],
+    )
+
+
+def _compiled_page_response(page: WikiCompiledPage) -> WikiCompiledPageResponse:
+    return WikiCompiledPageResponse(
+        page_id=page.page_id,
+        slug=page.slug,
+        title=page.title,
+        revision_id=page.revision_id,
+        revision_no=page.revision_no,
+        claim_count=page.claim_count,
+    )
+
+
+def _compile_topic_query(topic: str, source_id: str | None) -> str:
+    if source_id:
+        return (
+            f"Return source-backed evidence about {topic!r} from document {source_id!r}. "
+            "Focus on facts, key concepts, relationships, and open questions."
+        )
+    return (
+        f"Return source-backed evidence about {topic!r}. "
+        "Focus on facts, key concepts, relationships, and open questions."
+    )
+
+
+def _compile_job_status(status_value: str) -> WikiCompileJobStatus:
+    allowed = {"pending", "processing", "succeeded", "failed"}
+    if status_value not in allowed:
+        raise ValueError(f"Unknown wiki compile job status: {status_value}")
+    return cast(WikiCompileJobStatus, status_value)

@@ -13,6 +13,7 @@ class HealthResponse(BaseModel):
 
 QueryMode = Literal["local", "global", "hybrid", "naive", "mix", "bypass"]
 IngestJobStatus = Literal["pending", "processing", "succeeded", "failed"]
+WikiCompileJobStatus = Literal["pending", "processing", "succeeded", "failed"]
 
 
 class QueryRequest(BaseModel):
@@ -91,3 +92,29 @@ class WikiBacklinkResponse(BaseModel):
     title: str
     link_type: str
     created_at: datetime
+
+
+class WikiCompileRequest(BaseModel):
+    tenant_id: str = Field(min_length=1)
+    source_id: str | None = Field(default=None, min_length=1)
+    topic: str | None = Field(default=None, min_length=1)
+    target_slug: str | None = Field(default=None, min_length=1)
+
+
+class WikiCompiledPageResponse(BaseModel):
+    page_id: UUID
+    slug: str
+    title: str
+    revision_id: UUID
+    revision_no: int
+    claim_count: int
+
+
+class WikiCompileResponse(BaseModel):
+    job_id: UUID
+    tenant_id: str
+    source_id: str
+    target_slug: str | None
+    status: WikiCompileJobStatus
+    error: str | None
+    pages: list[WikiCompiledPageResponse]

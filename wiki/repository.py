@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wiki.models import (
     WikiClaim,
     WikiClaimSource,
+    WikiCompileJob,
     WikiLink,
     WikiPage,
     WikiRevision,
@@ -251,6 +252,45 @@ class WikiRepository:
         )
         return [WikiBacklink(link=link, page=page) for link, page in result.all()]
 
+    async def create_compile_job(
+        self,
+        *,
+        tenant_id: str,
+        source_id: str,
+        target_slug: str | None = None,
+    ) -> WikiCompileJob:
+        job = WikiCompileJob(
+            tenant_id=tenant_id,
+            source_id=source_id,
+            target_slug=target_slug,
+            status="pending",
+            error=None,
+        )
+        self.session.add(job)
+        await self.session.flush()
+        return job
+
+    async def mark_compile_job_processing(self, job_id: UUID) -> WikiCompileJob:
+        return await self._update_compile_job_status(
+            job_id,
+            status="processing",
+            error=None,
+        )
+
+    async def mark_compile_job_succeeded(self, job_id: UUID) -> WikiCompileJob:
+        return await self._update_compile_job_status(
+            job_id,
+            status="succeeded",
+            error=None,
+        )
+
+    async def mark_compile_job_failed(self, job_id: UUID, error: str) -> WikiCompileJob:
+        return await self._update_compile_job_status(
+            job_id,
+            status="failed",
+            error=error,
+        )
+
     async def _create_links_for_page(
         self,
         *,
@@ -292,3 +332,19 @@ class WikiRepository:
             )
         )
         return result.one_or_none()
+
+    async def _update_compile_job_status(
+        self,
+        job_id: UUID,
+        *,
+        status: str,
+        error: str | None,
+    ) -> WikiCompileJob:
+        job = await self.session.get(WikiCompileJob, job_id)
+        if job is None:
+            raise ValueError(f"Wiki compile job {job_id} does not exist")
+
+        job.status = status
+        job.error = error
+        await self.session.flush()
+        return job

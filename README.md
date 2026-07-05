@@ -2,10 +2,10 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 8 adds the async ingest worker. The API can now create pending ingest jobs, and
-`worker.ingest_worker` claims them with PostgreSQL row locks, downloads raw documents
-from MinIO/S3, runs the ingest pipeline, uploads extracted assets, and persists success
-or failure back to PostgreSQL.
+Task 9 adds the first llm-wiki compiler skeleton. The compiler queries the tenant RAG
+runtime for evidence, creates or updates Markdown wiki pages through `WikiService`,
+stores source-backed claims and provenance rows, and records compile job state in
+PostgreSQL.
 
 ## Requirements
 
@@ -77,6 +77,14 @@ same ingest service pipeline, and marks the job `succeeded` or `failed`. The cur
 schema does not store retry counters, so failed jobs remain failed until a retry policy
 and attempt columns are added in a later migration.
 
+Compile a wiki page from indexed evidence:
+
+```bash
+curl -X POST http://127.0.0.1:8000/wiki/compile \
+  -H 'content-type: application/json' \
+  -d '{"tenant_id":"default","source_id":"example-report","topic":"Main findings","target_slug":"main-findings"}'
+```
+
 Run checks:
 
 ```bash
@@ -105,6 +113,28 @@ uv run alembic revision --autogenerate -m "describe schema change"
 ```
 
 The initial migration creates the llm-wiki canonical store tables, including pages, revisions, links, claims, claim sources, ingest jobs, compile jobs, and validation results. The wiki data source of truth is PostgreSQL; Markdown/Git export can be added later as an optional target.
+
+## llm-wiki Compiler
+
+`POST /wiki/compile` runs a synchronous first-pass compile job. Provide either
+`source_id`, `topic`, or both:
+
+- `source_id` only compiles a source overview page.
+- `topic` only compiles a topic page from the tenant RAG index.
+- `source_id` plus `topic` asks the runtime for evidence about that topic within the source.
+- `target_slug` is optional and controls the page slug.
+
+Generated pages are Markdown with these sections: Summary, Key Concepts,
+Source-backed Claims, Related Pages, and Open Questions. Links discovered by the
+compiler are stored as wiki links using `[[...]]` syntax and rebuilt through
+`WikiService`.
+
+The compiler does not fabricate citations. If the current RAG runtime metadata
+contains structured source IDs, chunk IDs, entity IDs, relation IDs, page numbers, or
+quotes, those fields are copied to `wiki_claim_source`. If the runtime returns only an
+answer plus unstructured metadata, the compiler stores the best available
+`source_id` fallback and preserves the raw metadata in `wiki_claim_source.locator`
+with `structured_source_ids_available=false`.
 
 ## Docker Compose
 

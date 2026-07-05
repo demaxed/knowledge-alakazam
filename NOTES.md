@@ -30,3 +30,13 @@ Keep entries short and factual. Do not store secrets in this file.
 - Removed the compatibility `AGENT.md` file at the project owner's request.
 - Kept `AGENTS.md` as the only Codex instruction file and removed the synchronization note that referred to `AGENT.md`.
 - Verification passed: `uv run ruff check .` and `uv run pytest`.
+
+## 2026-07-06 - Task 9: llm-wiki Compiler Skeleton
+
+- Added `wiki/compiler.py` with `WikiCompiler`, RAG evidence querying, deterministic Markdown page rendering, claim/source persistence, fallback provenance handling, and compile-job status transitions.
+- Added `WikiRepository` compile-job methods for pending, processing, succeeded, and failed states.
+- Added `POST /wiki/compile` plus request/response schemas for source-only, topic-only, and topic-with-source compile requests.
+- Documented compiler usage and the provenance limitation when RAG metadata lacks structured chunk/entity IDs.
+- Added compiler tests for successful source compilation, fallback raw-metadata provenance, failed job persistence, and the compile API.
+- Verification passed: `uv run ruff check .`, `uv run pytest`, and `uv run mypy app wiki worker`.
+- Follow-up: the compiler still relies on the RAG runtime's returned metadata shape; richer page planning and citation extraction should be added once real LightRAG/RAG-Anything evidence payloads are observed.
