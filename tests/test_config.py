@@ -20,6 +20,10 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("VISION_MODEL", "vision-test")
     monkeypatch.setenv("EMBEDDING_MODEL", "embedding-test")
     monkeypatch.setenv("EMBEDDING_DIM", "768")
+    monkeypatch.setenv("RAG_RUNTIME_DISABLED", "true")
+    monkeypatch.setenv("RAG_ENABLE_IMAGE_PROCESSING", "false")
+    monkeypatch.setenv("RAG_ENABLE_TABLE_PROCESSING", "true")
+    monkeypatch.setenv("RAG_ENABLE_EQUATION_PROCESSING", "false")
     monkeypatch.setenv("MINIO_ROOT_USER", "minio")
     monkeypatch.setenv("MINIO_ROOT_PASSWORD", "minio-secret")
     monkeypatch.setenv("S3_ENDPOINT_URL", "http://minio:9000")
@@ -52,6 +56,10 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.vision_model == "vision-test"
     assert settings.embedding_model == "embedding-test"
     assert settings.embedding_dim == 768
+    assert settings.rag_runtime_disabled is True
+    assert settings.rag_enable_image_processing is False
+    assert settings.rag_enable_table_processing is True
+    assert settings.rag_enable_equation_processing is False
     assert settings.minio_root_user == "minio"
     assert settings.minio_root_password is not None
     assert settings.minio_root_password.get_secret_value() == "minio-secret"

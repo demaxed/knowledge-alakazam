@@ -40,6 +40,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("EMBEDDING_DIM", "EMBEDDING_DIMENSION"),
     )
 
+    rag_runtime_disabled: bool = True
+    rag_enable_image_processing: bool = True
+    rag_enable_table_processing: bool = True
+    rag_enable_equation_processing: bool = True
+
     minio_root_user: str | None = None
     minio_root_password: SecretStr | None = None
     s3_endpoint_url: str = "http://localhost:9000"

@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.query import router as query_router
 from app.api.wiki import router as wiki_router
 from app.config import Settings, get_settings
 from app.db import dispose_db, init_db
+from app.rag_runtime import RAGRuntimeRegistry
 
 
 @asynccontextmanager
@@ -16,6 +18,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        registry = getattr(application.state, "rag_runtime_registry", None)
+        if registry is not None:
+            await registry.shutdown()
         await dispose_db()
 
 
@@ -23,7 +28,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
     application = FastAPI(title=resolved_settings.service_name, lifespan=lifespan)
     application.state.settings = resolved_settings
+    application.state.rag_runtime_registry = RAGRuntimeRegistry(resolved_settings)
     application.include_router(health_router)
+    application.include_router(query_router)
     application.include_router(wiki_router)
     return application
 

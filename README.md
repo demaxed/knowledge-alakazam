@@ -2,7 +2,7 @@
 
 Production-oriented backend for RAG-Anything and LightRAG with PostgreSQL-backed storage, S3-compatible document assets, and PostgreSQL-backed llm-wiki state.
 
-Task 5 adds the S3-compatible asset store for raw documents and parsed output assets. RAG runtime and ingest execution are intentionally left for later tasks.
+Task 6 adds the guarded LightRAG + RAG-Anything runtime and `/query` API. Ingest execution is intentionally left for later tasks.
 
 ## Requirements
 
@@ -36,6 +36,16 @@ Check the health endpoint:
 ```bash
 curl http://127.0.0.1:8000/health
 ```
+
+Query the RAG runtime after enabling it and configuring model credentials:
+
+```bash
+curl -X POST http://127.0.0.1:8000/query \
+  -H 'content-type: application/json' \
+  -d '{"tenant_id":"default","question":"What is indexed?","mode":"hybrid"}'
+```
+
+For tests and local boot without LLM credentials, keep `RAG_RUNTIME_DISABLED=true`. When disabled, `/query` returns HTTP 503 with a clear runtime-disabled message instead of importing or initializing LightRAG/RAG-Anything.
 
 Run checks:
 
@@ -104,6 +114,21 @@ By default the app image installs only the base API dependencies. Set `INSTALL_R
 INSTALL_RAG_EXTRAS=true docker compose build app
 ```
 
+To use `/query` in Docker Compose, also provide `OPENAI_API_KEY` and set `RAG_RUNTIME_DISABLED=false`.
+
+## RAG Runtime
+
+The runtime integration was checked against the locked optional packages:
+
+- `lightrag-hku==1.5.4`
+- `raganything==1.3.1`
+
+The installed LightRAG API exposes `LightRAG(...)`, `initialize_storages()`, `finalize_storages()`, and async `aquery(...)`. `initialize_storages()` initializes pipeline status for the workspace, so the app calls it before handing the instance to RAG-Anything.
+
+The installed RAG-Anything API exposes `RAGAnything(lightrag=..., llm_model_func=..., vision_model_func=..., embedding_func=..., config=...)`, `RAGAnythingConfig`, async `aquery(...)`, and `finalize_storages()`. The app passes the existing LightRAG instance and configures image, table, and equation processing through the config object.
+
+Runtime instances are lazy and tenant-scoped. The API maps each `tenant_id` to a safe LightRAG workspace name and caches one runtime per workspace in the process. PostgreSQL connection settings for LightRAG storages are derived from `APP_DATABASE_URL` and exported to the package-expected `POSTGRES_*` environment variables during runtime initialization.
+
 ## Configuration
 
 Copy `.env.example` to `.env` for local overrides. Do not commit secrets.
@@ -116,6 +141,8 @@ Important variables:
 - `RAG_WORKING_DIR`, `RAG_OUTPUT_DIR`, `RAG_INPUT_DIR`: runtime paths for LightRAG state, parsed output, and ingest inputs.
 - `PARSER`, `PARSE_METHOD`: parser selection knobs for the later RAG-Anything ingest pipeline.
 - `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `VISION_MODEL`, `EMBEDDING_MODEL`: model provider configuration for later runtime integration.
+- `RAG_RUNTIME_DISABLED`: keep `true` for tests or local boot without model credentials; set `false` to enable lazy runtime initialization.
+- `RAG_ENABLE_IMAGE_PROCESSING`, `RAG_ENABLE_TABLE_PROCESSING`, `RAG_ENABLE_EQUATION_PROCESSING`: RAG-Anything multimodal processor flags.
 - `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`: MinIO console and S3 credentials.
 - `S3_ENDPOINT_URL`: local non-container S3 endpoint. The Compose app overrides this to use the `minio` service hostname.
 - `S3_BUCKET_RAW`, `S3_BUCKET_ASSETS`: raw document and extracted asset buckets.

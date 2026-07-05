@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -9,6 +9,21 @@ from pydantic import BaseModel, Field
 
 class HealthResponse(BaseModel):
     status: str
+
+
+QueryMode = Literal["local", "global", "hybrid", "naive", "mix", "bypass"]
+
+
+class QueryRequest(BaseModel):
+    tenant_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    mode: QueryMode = "hybrid"
+    vlm_enhanced: bool | None = None
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    metadata: dict[str, Any]
 
 
 class WikiPageCreateRequest(BaseModel):
