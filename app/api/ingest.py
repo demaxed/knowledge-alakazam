@@ -68,7 +68,10 @@ async def get_ingest_service(
     return DocumentIngestService(
         settings=settings,
         runtime_registry=registry,
-        job_repository=IngestJobRepository(session),
+        job_repository=IngestJobRepository(
+            session,
+            default_max_attempts=settings.worker_job_max_attempts,
+        ),
     )
 
 

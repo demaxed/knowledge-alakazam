@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+import socket
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from types import FrameType
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from app.config import Settings, get_settings
@@ -21,7 +24,7 @@ from app.ingest_service import (
 )
 from app.rag_runtime import RAGRuntimeRegistry
 from app.s3_assets import S3AssetStore
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from wiki.models import IngestJob
 
@@ -35,6 +38,9 @@ class ClaimedIngestJob:
     source_id: str
     raw_bucket: str
     raw_key: str
+    attempt_count: int = 0
+    max_attempts: int = 1
+    locked_by: str | None = None
 
     @classmethod
     def from_model(cls, job: IngestJob) -> ClaimedIngestJob:
@@ -44,6 +50,9 @@ class ClaimedIngestJob:
             source_id=job.source_id,
             raw_bucket=job.raw_bucket,
             raw_key=job.raw_key,
+            attempt_count=job.attempt_count,
+            max_attempts=job.max_attempts,
+            locked_by=job.locked_by,
         )
 
 
@@ -64,10 +73,32 @@ class IngestJobQueueProtocol(Protocol):
     async def mark_failed(self, job: ClaimedIngestJob, error: str) -> None: ...
 
 
-def pending_job_claim_statement() -> Select[tuple[IngestJob]]:
+class IngestJobHeartbeatQueueProtocol(Protocol):
+    async def heartbeat(self, job: ClaimedIngestJob) -> None: ...
+
+
+def pending_job_claim_statement(
+    *,
+    now: datetime,
+    lease_expires_before: datetime,
+) -> Select[tuple[IngestJob]]:
+    pending_ready = and_(
+        IngestJob.status == "pending",
+        or_(
+            IngestJob.next_attempt_at.is_(None),
+            IngestJob.next_attempt_at <= now,
+        ),
+    )
+    stale_processing = and_(
+        IngestJob.status == "processing",
+        or_(
+            IngestJob.heartbeat_at.is_(None),
+            IngestJob.heartbeat_at <= lease_expires_before,
+        ),
+    )
     return (
         select(IngestJob)
-        .where(IngestJob.status == "pending")
+        .where(or_(pending_ready, stale_processing))
         .order_by(IngestJob.created_at.asc(), IngestJob.id.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -75,26 +106,66 @@ def pending_job_claim_statement() -> Select[tuple[IngestJob]]:
 
 
 class DatabaseIngestJobQueue:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        lease_seconds: float = 300.0,
+        worker_id: str | None = None,
+    ) -> None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be greater than 0")
         self._session_factory = session_factory
+        self._lease_seconds = lease_seconds
+        self._worker_id = worker_id or _default_worker_id()
 
     async def claim_next_pending(self) -> ClaimedIngestJob | None:
         async with self._session_factory() as session, session.begin():
-            result = await session.scalars(pending_job_claim_statement())
-            job = result.first()
-            if job is None:
-                return None
+            while True:
+                now = _utc_now()
+                result = await session.scalars(
+                    pending_job_claim_statement(
+                        now=now,
+                        lease_expires_before=now - timedelta(seconds=self._lease_seconds),
+                    )
+                )
+                job = result.first()
+                if job is None:
+                    return None
 
-            job.status = "processing"
-            job.error = None
-            await session.flush()
-            return ClaimedIngestJob.from_model(job)
+                if _job_attempts_exhausted(job):
+                    _mark_job_failed_after_exhausted_attempts(job)
+                    await session.flush()
+                    logger.warning(
+                        "Ingest job exhausted retry attempts",
+                        extra={
+                            "job_id": str(job.id),
+                            "tenant_id": job.tenant_id,
+                            "source_id": job.source_id,
+                            "attempt_count": job.attempt_count,
+                            "max_attempts": job.max_attempts,
+                        },
+                    )
+                    continue
+
+                _claim_job_for_worker(job, now=now, worker_id=self._worker_id)
+                await session.flush()
+                return ClaimedIngestJob.from_model(job)
 
     async def mark_succeeded(self, job: ClaimedIngestJob) -> None:
         await self._update_status(job, status="succeeded", error=None)
 
     async def mark_failed(self, job: ClaimedIngestJob, error: str) -> None:
         await self._update_status(job, status="failed", error=error)
+
+    async def heartbeat(self, job: ClaimedIngestJob) -> None:
+        async with self._session_factory() as session, session.begin():
+            persisted_job = await session.get(IngestJob, job.id)
+            if persisted_job is None:
+                raise RuntimeError(f"Ingest job disappeared before heartbeat: {job.id}")
+            _assert_job_lease_owned(persisted_job, job)
+            persisted_job.heartbeat_at = _utc_now()
+            await session.flush()
 
     async def _update_status(
         self,
@@ -108,8 +179,11 @@ class DatabaseIngestJobQueue:
             if job is None:
                 raise RuntimeError(f"Ingest job disappeared before status update: {claimed_job.id}")
 
+            _assert_job_lease_owned(job, claimed_job)
             job.status = status
             job.error = error
+            job.locked_by = None
+            job.next_attempt_at = None
             await session.flush()
 
 
@@ -131,6 +205,10 @@ class IngestWorker:
             poll_interval_seconds
             if poll_interval_seconds is not None
             else settings.worker_poll_interval_seconds
+        )
+        self.heartbeat_interval_seconds = max(
+            0.1,
+            min(settings.worker_job_lease_seconds / 3, 60.0),
         )
 
     async def run(self, stop_event: asyncio.Event | None = None) -> None:
@@ -164,37 +242,136 @@ class IngestWorker:
             asset_store=self.asset_store,
             runtime_registry=self.runtime_registry,
         )
+        heartbeat_task = self._start_heartbeat(job)
 
         try:
-            prepared = prepared_document_for_job(self.settings, job)
-            self.asset_store.download_raw_document(
-                job.raw_bucket,
-                job.raw_key,
-                prepared.staged_path,
-            )
-            await service.process_prepared_document(prepared)
-        except Exception as exc:
-            error = _error_message(exc)
-            await self.queue.mark_failed(job, error)
-            logger.exception(
-                "Ingest job failed",
+            try:
+                prepared = prepared_document_for_job(self.settings, job)
+                self.asset_store.download_raw_document(
+                    job.raw_bucket,
+                    job.raw_key,
+                    prepared.staged_path,
+                )
+                await service.process_prepared_document(prepared)
+            except Exception as exc:
+                await self._stop_heartbeat(heartbeat_task)
+                heartbeat_task = None
+                error = _error_message(exc)
+                await self.queue.mark_failed(job, error)
+                logger.exception(
+                    "Ingest job failed",
+                    extra={
+                        "job_id": str(job.id),
+                        "tenant_id": job.tenant_id,
+                        "source_id": job.source_id,
+                    },
+                )
+                return
+
+            await self._stop_heartbeat(heartbeat_task)
+            heartbeat_task = None
+            await self.queue.mark_succeeded(job)
+            logger.info(
+                "Ingest job succeeded",
                 extra={
                     "job_id": str(job.id),
                     "tenant_id": job.tenant_id,
                     "source_id": job.source_id,
                 },
             )
+        finally:
+            if heartbeat_task is not None:
+                await self._stop_heartbeat(heartbeat_task)
+
+    def _start_heartbeat(self, job: ClaimedIngestJob) -> asyncio.Task[None] | None:
+        heartbeat_queue = _heartbeat_queue(self.queue)
+        if heartbeat_queue is None:
+            return None
+        return asyncio.create_task(
+            _heartbeat_job(
+                heartbeat_queue,
+                job,
+                interval_seconds=self.heartbeat_interval_seconds,
+            )
+        )
+
+    @staticmethod
+    async def _stop_heartbeat(heartbeat_task: asyncio.Task[None] | None) -> None:
+        if heartbeat_task is None:
             return
 
-        await self.queue.mark_succeeded(job)
-        logger.info(
-            "Ingest job succeeded",
-            extra={
-                "job_id": str(job.id),
-                "tenant_id": job.tenant_id,
-                "source_id": job.source_id,
-            },
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
+
+
+def _heartbeat_queue(queue: IngestJobQueueProtocol) -> IngestJobHeartbeatQueueProtocol | None:
+    if callable(getattr(queue, "heartbeat", None)):
+        return cast(IngestJobHeartbeatQueueProtocol, queue)
+    return None
+
+
+async def _heartbeat_job(
+    queue: IngestJobHeartbeatQueueProtocol,
+    job: ClaimedIngestJob,
+    *,
+    interval_seconds: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await queue.heartbeat(job)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Ingest job heartbeat failed",
+                extra={
+                    "job_id": str(job.id),
+                    "tenant_id": job.tenant_id,
+                    "source_id": job.source_id,
+                },
+            )
+
+
+def _claim_job_for_worker(job: IngestJob, *, now: datetime, worker_id: str) -> None:
+    job.status = "processing"
+    job.error = None
+    job.attempt_count = (job.attempt_count or 0) + 1
+    job.claimed_at = now
+    job.heartbeat_at = now
+    job.locked_by = worker_id
+    job.next_attempt_at = None
+
+
+def _job_attempts_exhausted(job: IngestJob) -> bool:
+    max_attempts = max(job.max_attempts or 1, 1)
+    return (job.attempt_count or 0) >= max_attempts
+
+
+def _mark_job_failed_after_exhausted_attempts(job: IngestJob) -> None:
+    max_attempts = max(job.max_attempts or 1, 1)
+    job.status = "failed"
+    job.error = f"Ingest job exceeded max attempts ({max_attempts}) after worker lease expired"
+    job.locked_by = None
+    job.next_attempt_at = None
+
+
+def _assert_job_lease_owned(persisted_job: IngestJob, claimed_job: ClaimedIngestJob) -> None:
+    if persisted_job.status != "processing":
+        raise RuntimeError(
+            f"Ingest job is no longer processing and cannot be updated: {claimed_job.id}"
         )
+    if persisted_job.locked_by != claimed_job.locked_by:
+        raise RuntimeError(f"Ingest job lease is no longer owned by this worker: {claimed_job.id}")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _default_worker_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def prepared_document_for_job(settings: Settings, job: ClaimedIngestJob) -> PreparedDocument:
@@ -225,7 +402,10 @@ async def run_cli() -> None:
     engine = create_engine(settings)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     runtime_registry = RAGRuntimeRegistry(settings)
-    queue = DatabaseIngestJobQueue(session_factory)
+    queue = DatabaseIngestJobQueue(
+        session_factory,
+        lease_seconds=settings.worker_job_lease_seconds,
+    )
     worker = IngestWorker(
         settings=settings,
         queue=queue,

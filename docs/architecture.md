@@ -96,8 +96,10 @@ controlled by `INGEST_SYNC`.
 ### Ingest Worker
 
 `worker/ingest_worker.py` implements the async ingest worker. It claims pending
-jobs with `FOR UPDATE SKIP LOCKED`, which allows multiple workers to run without
-double-claiming the same job.
+jobs and stale `processing` jobs with expired leases using
+`FOR UPDATE SKIP LOCKED`, which allows multiple workers to run without
+double-claiming the same active lease. Claimed jobs store attempt count,
+claim/heartbeat timestamps, and a worker lock owner.
 
 ### llm-wiki
 
@@ -198,10 +200,12 @@ Asynchronous ingest:
 
 1. API stages and uploads the raw document.
 2. API creates or updates a `pending` `ingest_job`.
-3. Worker claims one pending job with `FOR UPDATE SKIP LOCKED`.
+3. Worker claims one pending or stale expired-lease job with
+   `FOR UPDATE SKIP LOCKED`.
 4. Worker downloads the raw object to local input storage.
-5. Worker runs the same processing path.
-6. Worker persists `succeeded` or `failed`.
+5. Worker heartbeats the lease while running the same processing path.
+6. Worker persists `succeeded` or `failed`; stale jobs that exceed
+   `WORKER_JOB_MAX_ATTEMPTS` are moved to `failed`.
 
 ## Wiki Compiler Lifecycle
 
@@ -270,7 +274,8 @@ available. `locator` stores arbitrary raw metadata.
 
 Ingest lifecycle row keyed by `(tenant_id, source_id)`. Status is constrained to
 `pending`, `processing`, `succeeded`, or `failed`. Errors are persisted in
-`error`.
+`error`. Worker retry state is stored in `attempt_count`, `max_attempts`,
+`claimed_at`, `heartbeat_at`, `locked_by`, and `next_attempt_at`.
 
 ### `wiki_compile_job`
 

@@ -123,8 +123,9 @@ Suggested process:
 8. Re-run wiki compile jobs where generated pages depend on reindexed evidence.
 9. Run wiki validation and inspect errors.
 
-The current schema does not include retry attempt counters. Until those are
-added, replay should be done carefully with explicit job selection.
+Ingest jobs include attempt counters and worker lease metadata. During replay,
+reset selected rows to `pending` and confirm their `max_attempts` budget matches
+the intended replay policy.
 
 ## How To Replay Wiki Compile Jobs
 

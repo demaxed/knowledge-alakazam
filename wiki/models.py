@@ -195,7 +195,19 @@ class IngestJob(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "source_id", name="uq_ingest_job_tenant_source"),
         CheckConstraint(JOB_STATUS_CHECK, name="ck_ingest_job_status"),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_ingest_job_attempt_count_non_negative",
+        ),
+        CheckConstraint("max_attempts >= 1", name="ck_ingest_job_max_attempts_positive"),
         Index("ix_ingest_job_tenant_status", "tenant_id", "status"),
+        Index(
+            "ix_ingest_job_claimable",
+            "status",
+            "next_attempt_at",
+            "heartbeat_at",
+            "created_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -210,6 +222,25 @@ class IngestJob(TimestampMixin, Base):
         server_default="pending",
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=sql_text("0"),
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=3,
+        server_default=sql_text("3"),
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 class WikiCompileJob(TimestampMixin, Base):

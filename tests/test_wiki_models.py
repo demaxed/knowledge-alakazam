@@ -71,7 +71,25 @@ def test_job_status_constraints() -> None:
 
     assert check_constraints(ingest_job)["ck_ingest_job_status"] == models.JOB_STATUS_CHECK
     assert check_constraints(compile_job)["ck_wiki_compile_job_status"] == models.JOB_STATUS_CHECK
+    assert (
+        check_constraints(ingest_job)["ck_ingest_job_attempt_count_non_negative"]
+        == "attempt_count >= 0"
+    )
+    assert (
+        check_constraints(ingest_job)["ck_ingest_job_max_attempts_positive"] == "max_attempts >= 1"
+    )
     assert ("tenant_id", "source_id") in unique_column_sets(ingest_job)
+
+
+def test_ingest_job_lease_columns() -> None:
+    ingest_job = Base.metadata.tables["ingest_job"]
+
+    assert ingest_job.c.attempt_count.nullable is False
+    assert ingest_job.c.max_attempts.nullable is False
+    assert ingest_job.c.claimed_at.nullable is True
+    assert ingest_job.c.heartbeat_at.nullable is True
+    assert ingest_job.c.locked_by.nullable is True
+    assert ingest_job.c.next_attempt_at.nullable is True
 
 
 def test_validation_result_uses_metadata_column_name() -> None:

@@ -289,8 +289,9 @@ docker compose --profile worker up --build
 
 The worker claims pending jobs with `FOR UPDATE SKIP LOCKED`, marks one job
 `processing`, downloads the raw S3 object, runs the ingest pipeline, and marks
-the job `succeeded` or `failed`. Multiple workers should not double-claim the
-same pending job.
+the job `succeeded` or `failed`. It also heartbeats claimed jobs and can reclaim
+`processing` jobs whose lease expired after a worker crash or cancellation.
+Multiple workers should not double-claim the same active lease.
 
 ## Development Commands
 
@@ -334,6 +335,8 @@ Copy `.env.example` to `.env` for local overrides. Do not commit real secrets.
 | `PARSE_METHOD` | RAG-Anything parse method. | `auto` |
 | `INGEST_SYNC` | Runs ingest inline when `true`; creates pending jobs when `false`. | `true` |
 | `WORKER_POLL_INTERVAL_SECONDS` | Worker idle poll interval. | `5.0` |
+| `WORKER_JOB_LEASE_SECONDS` | Lease timeout before a stale `processing` ingest job can be retried by another worker. | `300.0` |
+| `WORKER_JOB_MAX_ATTEMPTS` | Maximum worker claim attempts before a stale job is moved to `failed`. | `3` |
 | `OPENAI_API_KEY` | OpenAI-compatible API key for LLM, VLM, and embeddings. | empty |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible base URL for LLM and VLM calls. Embeddings also use this when `EMBEDDING_BASE_URL` is unset. | empty |
 | `LLM_MODEL` | Chat model for text answers and wiki compile. | `gpt-4.1-mini` |
@@ -417,10 +420,9 @@ settings, request headers, credentials, or provider payloads to log extras.
 - Authentication and authorization are not implemented yet. The API has
   dependency boundaries where auth can be introduced later.
 - `tenant_id` is a logical isolation key, not a security boundary.
-- Failed ingest jobs do not have retry counters or max-attempt state yet.
 - The worker reuses the synchronous ingest implementation after downloading the
-  raw object. More specialized retry and dead-letter behavior should be added
-  before production workloads.
+  raw object. Parser/runtime failures are marked `failed` immediately; retry
+  attempts currently cover crashed or cancelled worker leases.
 - Wiki compiler output is deterministic and conservative, but it depends on the
   shape of RAG runtime evidence metadata. If chunk/entity/relation IDs are not
   returned, raw metadata is stored in provenance instead of fabricating

@@ -6,6 +6,7 @@ import shutil
 from collections.abc import Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -108,8 +109,11 @@ class IngestResult:
 
 
 class IngestJobRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, default_max_attempts: int = 3) -> None:
+        if default_max_attempts < 1:
+            raise ValueError("default_max_attempts must be at least 1")
         self.session = session
+        self.default_max_attempts = default_max_attempts
 
     @asynccontextmanager
     async def transaction(self) -> Any:
@@ -145,8 +149,11 @@ class IngestJobRepository:
             else:
                 job.raw_bucket = raw_bucket
                 job.raw_key = raw_key
-                job.status = status
-                job.error = error
+
+            job.status = status
+            job.error = error
+            if status == "pending":
+                self._reset_pending_job(job)
 
             await self.session.flush()
             return job
@@ -192,6 +199,10 @@ class IngestJobRepository:
 
             job.status = status
             job.error = error
+            if status == "processing":
+                self._claim_job_for_sync_ingest(job)
+            elif status in {"succeeded", "failed"}:
+                self._release_job_lock(job)
             await self.session.flush()
             return job
 
@@ -203,6 +214,28 @@ class IngestJobRepository:
             )
         )
         return result.one_or_none()
+
+    def _reset_pending_job(self, job: IngestJob) -> None:
+        job.attempt_count = 0
+        job.max_attempts = self.default_max_attempts
+        job.claimed_at = None
+        job.heartbeat_at = None
+        job.locked_by = None
+        job.next_attempt_at = None
+
+    @staticmethod
+    def _claim_job_for_sync_ingest(job: IngestJob) -> None:
+        now = datetime.now(UTC)
+        job.attempt_count = (job.attempt_count or 0) + 1
+        job.claimed_at = now
+        job.heartbeat_at = now
+        job.locked_by = "api-sync"
+        job.next_attempt_at = None
+
+    @staticmethod
+    def _release_job_lock(job: IngestJob) -> None:
+        job.locked_by = None
+        job.next_attempt_at = None
 
 
 class DocumentIngestService:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,9 +9,13 @@ import pytest
 from app.config import Settings
 from app.s3_assets import AssetUploadResult, RawUploadResult
 from sqlalchemy.dialects import postgresql
+from wiki.models import IngestJob
 from worker.ingest_worker import (
     ClaimedIngestJob,
     IngestWorker,
+    _claim_job_for_worker,
+    _job_attempts_exhausted,
+    _mark_job_failed_after_exhausted_attempts,
     pending_job_claim_statement,
     raw_download_path,
 )
@@ -21,6 +26,7 @@ class FakeJobQueue:
     jobs: list[ClaimedIngestJob]
     succeeded: list[ClaimedIngestJob]
     failed: list[tuple[ClaimedIngestJob, str]]
+    heartbeats: list[ClaimedIngestJob]
 
     async def claim_next_pending(self) -> ClaimedIngestJob | None:
         if not self.jobs:
@@ -32,6 +38,9 @@ class FakeJobQueue:
 
     async def mark_failed(self, job: ClaimedIngestJob, error: str) -> None:
         self.failed.append((job, error))
+
+    async def heartbeat(self, job: ClaimedIngestJob) -> None:
+        self.heartbeats.append(job)
 
 
 class FakeWorkerAssetStore:
@@ -149,20 +158,73 @@ def make_job() -> ClaimedIngestJob:
 
 
 def make_queue(*jobs: ClaimedIngestJob) -> FakeJobQueue:
-    return FakeJobQueue(jobs=list(jobs), succeeded=[], failed=[])
+    return FakeJobQueue(jobs=list(jobs), succeeded=[], failed=[], heartbeats=[])
 
 
 def test_pending_job_claim_statement_uses_skip_locked() -> None:
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
     compiled = str(
-        pending_job_claim_statement().compile(
+        pending_job_claim_statement(
+            now=now,
+            lease_expires_before=now - timedelta(minutes=5),
+        ).compile(
             dialect=postgresql.dialect(),
             compile_kwargs={"literal_binds": True},
         )
     )
 
     assert "WHERE ingest_job.status = 'pending'" in compiled
+    assert "ingest_job.next_attempt_at IS NULL" in compiled
+    assert "ingest_job.status = 'processing'" in compiled
+    assert "ingest_job.heartbeat_at IS NULL" in compiled
     assert "LIMIT 1" in compiled
     assert "FOR UPDATE SKIP LOCKED" in compiled
+
+
+def test_claim_job_for_worker_records_retry_and_lease_metadata() -> None:
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+    job = IngestJob(
+        id=uuid4(),
+        tenant_id="tenant-a",
+        source_id="source-1",
+        raw_bucket="raw-bucket",
+        raw_key="tenant-a/source-1/report.pdf",
+        status="pending",
+        attempt_count=1,
+        max_attempts=3,
+    )
+
+    _claim_job_for_worker(job, now=now, worker_id="worker-a")
+
+    assert job.status == "processing"
+    assert job.error is None
+    assert job.attempt_count == 2
+    assert job.claimed_at == now
+    assert job.heartbeat_at == now
+    assert job.locked_by == "worker-a"
+    assert ClaimedIngestJob.from_model(job).locked_by == "worker-a"
+
+
+def test_exhausted_job_is_marked_failed_instead_of_reclaimed() -> None:
+    job = IngestJob(
+        id=uuid4(),
+        tenant_id="tenant-a",
+        source_id="source-1",
+        raw_bucket="raw-bucket",
+        raw_key="tenant-a/source-1/report.pdf",
+        status="processing",
+        attempt_count=3,
+        max_attempts=3,
+        locked_by="worker-a",
+    )
+
+    assert _job_attempts_exhausted(job) is True
+
+    _mark_job_failed_after_exhausted_attempts(job)
+
+    assert job.status == "failed"
+    assert job.locked_by is None
+    assert job.error == "Ingest job exceeded max attempts (3) after worker lease expired"
 
 
 def test_raw_download_path_preserves_raw_filename(tmp_path: Path) -> None:

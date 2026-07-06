@@ -150,3 +150,15 @@ Keep entries short and factual. Do not store secrets in this file.
 - Commands run: `uv run pytest tests/test_wiki_repository.py tests/test_wiki_compiler.py`, `uv run ruff check wiki/repository.py tests/test_wiki_repository.py`, `uv run ruff check .`, `uv run pytest`, `uv run mypy app wiki worker`.
 - Verification passed: targeted wiki transaction/compiler tests with 8 passing tests; `uv run ruff check .`; `uv run pytest` with 57 passing tests; `uv run mypy app wiki worker`.
 - Follow-up: consider applying the same transaction-origin pattern to `IngestJobRepository.transaction()` if future ingest flows perform standalone reads before job status writes on the same session.
+
+## 2026-07-06 - Resolve HIGH-2 Ingest Worker Leases
+
+- Added durable ingest job lease and retry metadata: `attempt_count`, `max_attempts`, `claimed_at`, `heartbeat_at`, `locked_by`, and `next_attempt_at`.
+- Added an Alembic migration and model constraints/indexes for retry budgets and claimable job lookup.
+- Updated the DB-backed worker queue to reclaim stale `processing` jobs, heartbeat active leases, prevent stale workers from writing final status after ownership is lost, and mark exhausted stale jobs `failed`.
+- Reset retry/lease metadata when a new pending ingest job is created and routed max-attempts/lease settings through `pydantic-settings`.
+- Documented `WORKER_JOB_LEASE_SECONDS` and `WORKER_JOB_MAX_ATTEMPTS` in `.env.example`, `README.md`, architecture notes, and operations notes.
+- Files changed: `.env.example`, `README.md`, `app/api/ingest.py`, `app/config.py`, `app/ingest_service.py`, `docs/architecture.md`, `docs/operations.md`, `migrations/versions/20260706_0002_ingest_job_leases.py`, `tests/test_config.py`, `tests/test_ingest_worker.py`, `tests/test_wiki_models.py`, `wiki/models.py`, `worker/ingest_worker.py`, `NOTES.md`.
+- Commands run: `uv run pytest tests/test_ingest_worker.py tests/test_wiki_models.py tests/test_config.py`, `uv run ruff check worker/ingest_worker.py app/ingest_service.py app/config.py app/api/ingest.py wiki/models.py tests/test_ingest_worker.py tests/test_wiki_models.py tests/test_config.py`, `uv run ruff check .`, `uv run pytest`, `uv run ruff format . --check`, `uv run ruff format .`, `uv run mypy app wiki worker`.
+- Verification passed: targeted ingest worker/model/config tests with 16 passing tests; `uv run ruff check .`; `uv run pytest` with 60 passing tests; `uv run ruff format . --check`; `uv run mypy app wiki worker`.
+- Follow-up: add a PostgreSQL integration test for two real workers competing over stale `processing` rows once a DB-backed integration suite exists.
