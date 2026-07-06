@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,8 @@ class FakeS3Client:
         self.created_buckets: list[dict[str, Any]] = []
         self.uploads: list[UploadCall] = []
         self.downloads: list[DownloadCall] = []
+        self.upload_thread_ids: list[int] = []
+        self.download_thread_ids: list[int] = []
 
     def head_bucket(self, *, Bucket: str) -> None:
         if Bucket not in self.buckets:
@@ -54,6 +57,7 @@ class FakeS3Client:
         Key: str,
         ExtraArgs: dict[str, str] | None = None,
     ) -> None:
+        self.upload_thread_ids.append(threading.get_ident())
         self.head_bucket(Bucket=Bucket)
         self.uploads.append(
             UploadCall(
@@ -66,6 +70,7 @@ class FakeS3Client:
         self.objects[(Bucket, Key)] = Path(Filename).read_bytes()
 
     def download_file(self, Bucket: str, Key: str, Filename: str) -> None:
+        self.download_thread_ids.append(threading.get_ident())
         self.head_bucket(Bucket=Bucket)
         self.downloads.append(DownloadCall(bucket=Bucket, key=Key, filename=Filename))
         Path(Filename).write_bytes(self.objects[(Bucket, Key)])
@@ -118,6 +123,27 @@ def test_upload_raw_document_maps_key_and_content_type(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_upload_raw_document_async_runs_s3_call_off_event_loop_thread(
+    tmp_path: Path,
+) -> None:
+    local_file = tmp_path / "report.pdf"
+    local_file.write_bytes(b"%PDF-1.7")
+    fake_client = FakeS3Client(buckets={"raw-bucket"})
+    store = S3AssetStore(settings=make_settings(), s3_client=fake_client)
+    event_loop_thread_id = threading.get_ident()
+
+    result = await store.upload_raw_document_async(
+        local_file,
+        tenant_id="tenant-a",
+        source_id="source-1",
+    )
+
+    assert result.key == "tenant-a/source-1/report.pdf"
+    assert fake_client.upload_thread_ids
+    assert fake_client.upload_thread_ids[-1] != event_loop_thread_id
+
+
 def test_upload_output_tree_preserves_relative_paths(tmp_path: Path) -> None:
     output_root = tmp_path / "output"
     source_root = output_root / "tenant-a" / "source-1"
@@ -141,6 +167,30 @@ def test_upload_output_tree_preserves_relative_paths(tmp_path: Path) -> None:
         "http://minio:9000/asset-bucket/output/tenant-a/source-1/tables/table%201.csv"
     )
     assert [upload.key for upload in fake_client.uploads] == [result.key for result in results]
+
+
+@pytest.mark.asyncio
+async def test_upload_output_tree_async_runs_s3_calls_off_event_loop_thread(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    source_root = output_root / "tenant-a" / "source-1"
+    figure = source_root / "images" / "fig1.png"
+    figure.parent.mkdir(parents=True)
+    figure.write_bytes(b"png")
+    fake_client = FakeS3Client(buckets={"asset-bucket"})
+    store = S3AssetStore(settings=make_settings(), s3_client=fake_client)
+    event_loop_thread_id = threading.get_ident()
+
+    results = await store.upload_output_tree_async(
+        output_root,
+        tenant_id="tenant-a",
+        source_id="source-1",
+    )
+
+    assert [result.key for result in results] == ["output/tenant-a/source-1/images/fig1.png"]
+    assert fake_client.upload_thread_ids
+    assert fake_client.upload_thread_ids[-1] != event_loop_thread_id
 
 
 def test_output_asset_key_requires_asset_under_source_output_root(tmp_path: Path) -> None:
@@ -210,3 +260,26 @@ def test_download_raw_document_creates_destination_parent(tmp_path: Path) -> Non
             filename=str(destination),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_download_raw_document_async_runs_s3_call_off_event_loop_thread(
+    tmp_path: Path,
+) -> None:
+    fake_client = FakeS3Client(
+        buckets={"raw-bucket"},
+        objects={("raw-bucket", "tenant-a/source-1/report.pdf"): b"%PDF-1.7"},
+    )
+    store = S3AssetStore(settings=make_settings(), s3_client=fake_client)
+    destination = tmp_path / "downloads" / "report.pdf"
+    event_loop_thread_id = threading.get_ident()
+
+    await store.download_raw_document_async(
+        bucket="raw-bucket",
+        key="tenant-a/source-1/report.pdf",
+        destination_path=destination,
+    )
+
+    assert destination.read_bytes() == b"%PDF-1.7"
+    assert fake_client.download_thread_ids
+    assert fake_client.download_thread_ids[-1] != event_loop_thread_id

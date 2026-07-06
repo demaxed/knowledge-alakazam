@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import shutil
@@ -8,7 +9,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -45,6 +46,24 @@ class AssetStoreProtocol(Protocol):
     ) -> RawUploadResult: ...
 
     def upload_output_tree(
+        self,
+        local_output_root: str | Path,
+        tenant_id: str,
+        source_id: str,
+    ) -> list[AssetUploadResult]: ...
+
+
+class AsyncRawAssetStoreProtocol(Protocol):
+    async def upload_raw_document_async(
+        self,
+        local_path: str | Path,
+        tenant_id: str,
+        source_id: str,
+    ) -> RawUploadResult: ...
+
+
+class AsyncOutputAssetStoreProtocol(Protocol):
+    async def upload_output_tree_async(
         self,
         local_output_root: str | Path,
         tenant_id: str,
@@ -260,7 +279,7 @@ class DocumentIngestService:
         source_id: str | None = None,
     ) -> IngestResult:
         job_repository = self._require_job_repository()
-        prepared = self.prepare_document(
+        prepared = await self.prepare_document_async(
             local_path=local_path,
             tenant_id=tenant_id,
             source_id=source_id,
@@ -278,7 +297,8 @@ class DocumentIngestService:
         )
 
         try:
-            raw_upload = self.asset_store.upload_raw_document(
+            raw_upload = await _upload_raw_document_async(
+                self.asset_store,
                 prepared.staged_path,
                 tenant_id=prepared.tenant_id,
                 source_id=prepared.source_id,
@@ -321,7 +341,7 @@ class DocumentIngestService:
             raise IngestError("RAG runtime registry is not configured")
 
         job_repository = self._require_job_repository()
-        prepared = self.prepare_document(
+        prepared = await self.prepare_document_async(
             local_path=local_path,
             tenant_id=tenant_id,
             source_id=source_id,
@@ -345,7 +365,8 @@ class DocumentIngestService:
                 "ingest_job_processing",
                 extra={"tenant_id": prepared.tenant_id, "source_id": prepared.source_id},
             )
-            raw_upload = self.asset_store.upload_raw_document(
+            raw_upload = await _upload_raw_document_async(
+                self.asset_store,
                 prepared.staged_path,
                 tenant_id=prepared.tenant_id,
                 source_id=prepared.source_id,
@@ -384,7 +405,7 @@ class DocumentIngestService:
         if self.runtime_registry is None:
             raise IngestError("RAG runtime registry is not configured")
 
-        prepared.output_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(prepared.output_dir.mkdir, parents=True, exist_ok=True)
         runtime = await self.runtime_registry.get(prepared.tenant_id)
         await runtime.process_document_complete(
             file_path=prepared.staged_path,
@@ -392,7 +413,8 @@ class DocumentIngestService:
             source_id=prepared.source_id,
             file_name=prepared.staged_path.name,
         )
-        return self.asset_store.upload_output_tree(
+        return await _upload_output_tree_async(
+            self.asset_store,
             self.settings.rag_output_dir,
             tenant_id=prepared.tenant_id,
             source_id=prepared.source_id,
@@ -432,6 +454,20 @@ class DocumentIngestService:
             output_dir=output_dir,
             raw_bucket=self.settings.s3_bucket_raw,
             raw_key=raw_key,
+        )
+
+    async def prepare_document_async(
+        self,
+        *,
+        local_path: str | Path,
+        tenant_id: str,
+        source_id: str | None = None,
+    ) -> PreparedDocument:
+        return await asyncio.to_thread(
+            self.prepare_document,
+            local_path=local_path,
+            tenant_id=tenant_id,
+            source_id=source_id,
         )
 
     async def _mark_failed(self, prepared: PreparedDocument, exc: Exception) -> None:
@@ -485,6 +521,52 @@ def _source_id_from_file(path: Path) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()[:32]
+
+
+async def _upload_raw_document_async(
+    asset_store: AssetStoreProtocol,
+    local_path: str | Path,
+    *,
+    tenant_id: str,
+    source_id: str,
+) -> RawUploadResult:
+    if callable(getattr(asset_store, "upload_raw_document_async", None)):
+        async_asset_store = cast(AsyncRawAssetStoreProtocol, asset_store)
+        return await async_asset_store.upload_raw_document_async(
+            local_path,
+            tenant_id=tenant_id,
+            source_id=source_id,
+        )
+
+    return await asyncio.to_thread(
+        asset_store.upload_raw_document,
+        local_path,
+        tenant_id=tenant_id,
+        source_id=source_id,
+    )
+
+
+async def _upload_output_tree_async(
+    asset_store: AssetStoreProtocol,
+    local_output_root: str | Path,
+    *,
+    tenant_id: str,
+    source_id: str,
+) -> list[AssetUploadResult]:
+    if callable(getattr(asset_store, "upload_output_tree_async", None)):
+        async_asset_store = cast(AsyncOutputAssetStoreProtocol, asset_store)
+        return await async_asset_store.upload_output_tree_async(
+            local_output_root,
+            tenant_id=tenant_id,
+            source_id=source_id,
+        )
+
+    return await asyncio.to_thread(
+        asset_store.upload_output_tree,
+        local_output_root,
+        tenant_id=tenant_id,
+        source_id=source_id,
+    )
 
 
 def _safe_path_segment(value: str, name: str) -> str:

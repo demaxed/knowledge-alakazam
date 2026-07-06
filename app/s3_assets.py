@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 from dataclasses import dataclass
@@ -127,6 +128,19 @@ class S3AssetStore:
             url=self.public_asset_url(bucket, key),
         )
 
+    async def upload_raw_document_async(
+        self,
+        local_path: str | Path,
+        tenant_id: str,
+        source_id: str,
+    ) -> RawUploadResult:
+        return await asyncio.to_thread(
+            self.upload_raw_document,
+            local_path,
+            tenant_id=tenant_id,
+            source_id=source_id,
+        )
+
     def upload_output_tree(
         self,
         local_output_root: str | Path,
@@ -172,6 +186,19 @@ class S3AssetStore:
         )
         return results
 
+    async def upload_output_tree_async(
+        self,
+        local_output_root: str | Path,
+        tenant_id: str,
+        source_id: str,
+    ) -> list[AssetUploadResult]:
+        return await asyncio.to_thread(
+            self.upload_output_tree,
+            local_output_root,
+            tenant_id=tenant_id,
+            source_id=source_id,
+        )
+
     def public_asset_url(self, bucket: str, key: str) -> str:
         quoted_bucket = quote(bucket.strip("/"), safe="")
         quoted_key = quote(key.lstrip("/"), safe="/")
@@ -195,6 +222,19 @@ class S3AssetStore:
             raise S3DownloadError(f"Failed to download s3://{bucket}/{key}") from exc
         except (BotoCoreError, OSError) as exc:
             raise S3DownloadError(f"Failed to download s3://{bucket}/{key}") from exc
+
+    async def download_raw_document_async(
+        self,
+        bucket: str,
+        key: str,
+        destination_path: str | Path,
+    ) -> None:
+        await asyncio.to_thread(
+            self.download_raw_document,
+            bucket,
+            key,
+            destination_path,
+        )
 
     def raw_document_key(self, local_path: str | Path, tenant_id: str, source_id: str) -> str:
         path = Path(local_path)

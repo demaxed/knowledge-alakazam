@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -53,8 +54,12 @@ class FakeAssetStore:
         self.settings = settings
         self.raw_uploads: list[Path] = []
         self.output_uploads: list[Path] = []
+        self.raw_key_thread_ids: list[int] = []
+        self.raw_upload_thread_ids: list[int] = []
+        self.output_upload_thread_ids: list[int] = []
 
     def raw_document_key(self, local_path: str | Path, tenant_id: str, source_id: str) -> str:
+        self.raw_key_thread_ids.append(threading.get_ident())
         return f"{tenant_id}/{source_id}/{Path(local_path).name}"
 
     def upload_raw_document(
@@ -63,6 +68,7 @@ class FakeAssetStore:
         tenant_id: str,
         source_id: str,
     ) -> RawUploadResult:
+        self.raw_upload_thread_ids.append(threading.get_ident())
         path = Path(local_path)
         self.raw_uploads.append(path)
         return RawUploadResult(
@@ -81,6 +87,7 @@ class FakeAssetStore:
         tenant_id: str,
         source_id: str,
     ) -> list[AssetUploadResult]:
+        self.output_upload_thread_ids.append(threading.get_ident())
         root = Path(local_output_root)
         self.output_uploads.append(root)
         asset_path = root / tenant_id / source_id / "images" / "fig1.png"
@@ -230,6 +237,37 @@ async def test_ingest_document_records_status_transitions(tmp_path: Path) -> Non
             "report.pdf",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_offloads_blocking_staging_and_asset_operations(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    repository = FakeJobRepository()
+    runtime = FakeRuntime()
+    asset_store = FakeAssetStore(settings)
+    service = DocumentIngestService(
+        settings=settings,
+        asset_store=asset_store,
+        runtime_registry=FakeRuntimeRegistry(runtime),
+        job_repository=repository,
+    )
+    source_file = make_source_file(tmp_path)
+    event_loop_thread_id = threading.get_ident()
+
+    await service.ingest_document(
+        local_path=source_file,
+        tenant_id="tenant-a",
+        source_id="source-1",
+    )
+
+    assert asset_store.raw_key_thread_ids
+    assert asset_store.raw_upload_thread_ids
+    assert asset_store.output_upload_thread_ids
+    assert asset_store.raw_key_thread_ids[-1] != event_loop_thread_id
+    assert asset_store.raw_upload_thread_ids[-1] != event_loop_thread_id
+    assert asset_store.output_upload_thread_ids[-1] != event_loop_thread_id
 
 
 @pytest.mark.asyncio

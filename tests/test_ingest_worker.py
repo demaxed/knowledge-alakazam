@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -48,6 +49,8 @@ class FakeWorkerAssetStore:
         self.settings = settings
         self.downloads: list[tuple[str, str, Path]] = []
         self.output_uploads: list[tuple[Path, str, str]] = []
+        self.download_thread_ids: list[int] = []
+        self.output_upload_thread_ids: list[int] = []
 
     def raw_document_key(self, local_path: str | Path, tenant_id: str, source_id: str) -> str:
         return f"{tenant_id}/{source_id}/{Path(local_path).name}"
@@ -75,6 +78,7 @@ class FakeWorkerAssetStore:
         key: str,
         destination_path: str | Path,
     ) -> None:
+        self.download_thread_ids.append(threading.get_ident())
         destination = Path(destination_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"%PDF-1.7")
@@ -86,6 +90,7 @@ class FakeWorkerAssetStore:
         tenant_id: str,
         source_id: str,
     ) -> list[AssetUploadResult]:
+        self.output_upload_thread_ids.append(threading.get_ident())
         root = Path(local_output_root)
         self.output_uploads.append((root, tenant_id, source_id))
         asset_path = root / tenant_id / source_id / "images" / "fig1.png"
@@ -244,6 +249,7 @@ async def test_worker_processes_claimed_job(tmp_path: Path) -> None:
     store = FakeWorkerAssetStore(settings)
     runtime = FakeRuntime()
     registry = FakeRuntimeRegistry(runtime)
+    event_loop_thread_id = threading.get_ident()
     worker = IngestWorker(
         settings=settings,
         queue=queue,
@@ -265,6 +271,8 @@ async def test_worker_processes_claimed_job(tmp_path: Path) -> None:
         )
     ]
     assert store.output_uploads == [(settings.rag_output_dir, "tenant-a", "source-1")]
+    assert store.download_thread_ids[-1] != event_loop_thread_id
+    assert store.output_upload_thread_ids[-1] != event_loop_thread_id
     assert registry.requested_tenants == ["tenant-a"]
     assert runtime.calls == [
         (

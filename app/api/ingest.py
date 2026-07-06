@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import shutil
 import tempfile
 from pathlib import Path
@@ -123,19 +124,32 @@ async def ingest(
             detail=str(exc),
         ) from exc
     finally:
-        shutil.rmtree(temp_path.parent, ignore_errors=True)
+        await _remove_tree(temp_path.parent)
 
     return _response(result)
 
 
 async def _save_upload_to_temp(file: UploadFile) -> Path:
-    temp_dir = Path(tempfile.mkdtemp(prefix="ingest-upload-"))
+    temp_dir = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="ingest-upload-"))
     filename = Path(file.filename or "upload.bin").name or "upload.bin"
     temp_path = temp_dir / filename
-    with temp_path.open("wb") as temp_file:
-        while chunk := await file.read(1024 * 1024):
-            temp_file.write(chunk)
+
+    try:
+        temp_file = await asyncio.to_thread(temp_path.open, "wb")
+        try:
+            while chunk := await file.read(1024 * 1024):
+                await asyncio.to_thread(temp_file.write, chunk)
+        finally:
+            await asyncio.to_thread(temp_file.close)
+    except (Exception, asyncio.CancelledError):
+        await _remove_tree(temp_dir)
+        raise
+
     return temp_path
+
+
+async def _remove_tree(path: Path) -> None:
+    await asyncio.to_thread(shutil.rmtree, path, ignore_errors=True)
 
 
 def _response(result: IngestResult) -> IngestResponse:

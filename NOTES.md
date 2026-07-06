@@ -162,3 +162,15 @@ Keep entries short and factual. Do not store secrets in this file.
 - Commands run: `uv run pytest tests/test_ingest_worker.py tests/test_wiki_models.py tests/test_config.py`, `uv run ruff check worker/ingest_worker.py app/ingest_service.py app/config.py app/api/ingest.py wiki/models.py tests/test_ingest_worker.py tests/test_wiki_models.py tests/test_config.py`, `uv run ruff check .`, `uv run pytest`, `uv run ruff format . --check`, `uv run ruff format .`, `uv run mypy app wiki worker`.
 - Verification passed: targeted ingest worker/model/config tests with 16 passing tests; `uv run ruff check .`; `uv run pytest` with 60 passing tests; `uv run ruff format . --check`; `uv run mypy app wiki worker`.
 - Follow-up: add a PostgreSQL integration test for two real workers competing over stale `processing` rows once a DB-backed integration suite exists.
+
+## 2026-07-06 - Resolve HIGH-4 Async Blocking Ingest IO
+
+- Added async offloading wrappers to `S3AssetStore` for raw uploads, output-tree uploads, and raw downloads while preserving the existing synchronous API.
+- Updated the async ingest service to run local staging/hash/copy work, raw S3 uploads, output directory creation, and parsed asset uploads off the event-loop thread.
+- Updated the FastAPI ingest route to create temp directories, write multipart upload chunks, close files, and remove temp trees through `asyncio.to_thread`.
+- Updated the ingest worker to offload raw S3 downloads and reuse the service's offloaded parsed asset upload path.
+- Added regression tests that verify S3, service, worker, and upload staging operations run through the threaded offload path, including temp cleanup after upload cancellation.
+- Files changed: `app/api/ingest.py`, `app/ingest_service.py`, `app/s3_assets.py`, `worker/ingest_worker.py`, `tests/test_ingest_api.py`, `tests/test_ingest_service.py`, `tests/test_ingest_worker.py`, `tests/test_s3_assets.py`, `NOTES.md`.
+- Commands run: `uv run pytest tests/test_s3_assets.py tests/test_ingest_service.py tests/test_ingest_worker.py tests/test_ingest_api.py`, `uv run ruff check app/s3_assets.py app/ingest_service.py app/api/ingest.py worker/ingest_worker.py tests/test_s3_assets.py tests/test_ingest_service.py tests/test_ingest_worker.py tests/test_ingest_api.py`, `uv run ruff check .`, `uv run pytest`, `uv run ruff format . --check`, `uv run mypy app wiki worker`.
+- Verification passed: targeted ingest/S3/API tests with 27 passing tests; `uv run ruff check .`; `uv run pytest` with 66 passing tests; `uv run ruff format . --check`; `uv run mypy app wiki worker`.
+- Follow-up: consider moving raw document upload fully out of the HTTP request path if asynchronous ingest response latency becomes a production bottleneck.

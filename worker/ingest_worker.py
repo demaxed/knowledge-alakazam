@@ -65,6 +65,15 @@ class WorkerAssetStoreProtocol(AssetStoreProtocol, Protocol):
     ) -> None: ...
 
 
+class AsyncWorkerAssetStoreProtocol(Protocol):
+    async def download_raw_document_async(
+        self,
+        bucket: str,
+        key: str,
+        destination_path: str | Path,
+    ) -> None: ...
+
+
 class IngestJobQueueProtocol(Protocol):
     async def claim_next_pending(self) -> ClaimedIngestJob | None: ...
 
@@ -247,7 +256,8 @@ class IngestWorker:
         try:
             try:
                 prepared = prepared_document_for_job(self.settings, job)
-                self.asset_store.download_raw_document(
+                await _download_raw_document_async(
+                    self.asset_store,
                     job.raw_bucket,
                     job.raw_key,
                     prepared.staged_path,
@@ -309,6 +319,25 @@ def _heartbeat_queue(queue: IngestJobQueueProtocol) -> IngestJobHeartbeatQueuePr
     if callable(getattr(queue, "heartbeat", None)):
         return cast(IngestJobHeartbeatQueueProtocol, queue)
     return None
+
+
+async def _download_raw_document_async(
+    asset_store: WorkerAssetStoreProtocol,
+    bucket: str,
+    key: str,
+    destination_path: str | Path,
+) -> None:
+    if callable(getattr(asset_store, "download_raw_document_async", None)):
+        async_asset_store = cast(AsyncWorkerAssetStoreProtocol, asset_store)
+        await async_asset_store.download_raw_document_async(bucket, key, destination_path)
+        return
+
+    await asyncio.to_thread(
+        asset_store.download_raw_document,
+        bucket,
+        key,
+        destination_path,
+    )
 
 
 async def _heartbeat_job(
