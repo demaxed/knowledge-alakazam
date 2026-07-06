@@ -27,6 +27,9 @@ local:
 worker:
 	uv run python -m worker.ingest_worker
 
+wiki:
+	uv run python wiki
+
 health:
 	curl http://127.0.0.1:8080/health | python3 -m json.tool
 

@@ -140,3 +140,13 @@ Keep entries short and factual. Do not store secrets in this file.
 - Commands run: `curl -L -o assets/alakazam.jpg ...`, `file assets/alakazam.jpg`, `ls -lh assets/alakazam.jpg`, `uv run ruff check .`, `uv run pytest`.
 - Verification passed: `README.md` no longer contains the external image URL; `assets/alakazam.jpg` is a valid 800x600 JPEG; `uv run ruff check .`; `uv run pytest` with 53 passing tests.
 - Follow-up: none.
+
+## 2026-07-06 - Resolve CRITICAL-1 Wiki Compile Transaction
+
+- Fixed `WikiRepository.transaction()` so SQLAlchemy `AUTOBEGIN` transactions opened by prior reads are committed or rolled back by the repository transaction boundary instead of being mistaken for caller-owned transactions.
+- Preserved nested repository transactions and explicit caller-managed `BEGIN` transactions without forcing an unexpected commit.
+- Added focused regression tests for autobegun commit, autobegun rollback, explicit external transactions, and normal `session.begin()` behavior.
+- Files changed: `wiki/repository.py`, `tests/test_wiki_repository.py`, `NOTES.md`.
+- Commands run: `uv run pytest tests/test_wiki_repository.py tests/test_wiki_compiler.py`, `uv run ruff check wiki/repository.py tests/test_wiki_repository.py`, `uv run ruff check .`, `uv run pytest`, `uv run mypy app wiki worker`.
+- Verification passed: targeted wiki transaction/compiler tests with 8 passing tests; `uv run ruff check .`; `uv run pytest` with 57 passing tests; `uv run mypy app wiki worker`.
+- Follow-up: consider applying the same transaction-origin pattern to `IngestJobRepository.transaction()` if future ingest flows perform standalone reads before job status writes on the same session.

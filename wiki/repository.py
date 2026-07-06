@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import SessionTransactionOrigin
 
 from wiki.models import (
     WikiClaim,
@@ -51,15 +52,45 @@ def _dedupe_slugs(to_slugs: Iterable[str]) -> list[str]:
 class WikiRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self._transaction_depth = 0
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        if self.session.in_transaction():
+        if self._transaction_depth > 0:
             yield
             return
 
-        async with self.session.begin():
-            yield
+        active_transaction = self.session.get_transaction()
+        if active_transaction is not None:
+            sync_transaction = active_transaction.sync_transaction
+            if (
+                sync_transaction is None
+                or sync_transaction.origin is not SessionTransactionOrigin.AUTOBEGIN
+            ):
+                yield
+                return
+
+            # A prior read can leave an AUTOBEGIN transaction open before a
+            # write workflow starts; close it at this repository boundary.
+            self._transaction_depth += 1
+            try:
+                try:
+                    yield
+                except BaseException:
+                    await self.session.rollback()
+                    raise
+                else:
+                    await self.session.commit()
+            finally:
+                self._transaction_depth -= 1
+            return
+
+        self._transaction_depth += 1
+        try:
+            async with self.session.begin():
+                yield
+        finally:
+            self._transaction_depth -= 1
 
     async def get_page_by_slug(self, tenant_id: str, slug: str) -> WikiPage | None:
         result = await self.session.scalars(
