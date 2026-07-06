@@ -61,3 +61,65 @@ Keep entries short and factual. Do not store secrets in this file.
 - Verification passed: `docker compose config --quiet`, `uv run ruff check .`, `uv run pytest`, and `uv run mypy app wiki worker`.
 - Live `docker compose up --build -d` verification was attempted but could not connect to the configured Docker daemon socket at `/Users/mademyanenko/.lima/avito/sock/docker.sock`.
 - Follow-up: run `docker compose up --build` from an environment with the Docker daemon running, then apply migrations and check `http://127.0.0.1:8080/health`.
+
+## 2026-07-06 - Docker Compose pgvector Startup Fix
+
+- Fixed the custom PostgreSQL Docker image build by compiling pgvector with `OPTFLAGS=""`, matching pgvector's portable Docker build guidance and avoiding `Illegal instruction` crashes from `-march=native`.
+- Diagnosed the local Docker failure: the default Docker context pointed at missing `/var/run/docker.sock`; `colima-avito` was the reachable context.
+- Rebuilt and started `postgres`, `minio`, and `create-buckets` through `docker --context colima-avito compose`.
+- Repaired the existing local Postgres volume by manually applying `/docker-entrypoint-initdb.d/001_extensions.sql` after the rebuild; verified `age:1.6.0` and `vector:0.8.4`.
+- Files changed: `db/Dockerfile.postgres`, `NOTES.md`.
+- Commands run: `docker context ls`, `docker --context colima-avito compose up --build -d postgres minio create-buckets`, `docker --context colima-avito compose logs`, `docker --context colima-avito compose up --build -d postgres`, `docker --context colima-avito compose exec -T postgres psql ...`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: Compose services are healthy (`postgres`, `minio`) or completed successfully (`create-buckets`); `uv run ruff check .`; `uv run pytest` with 46 passing tests.
+
+## 2026-07-06 - Docker App pgvector Python Dependency
+
+- Added the Python `pgvector` adapter to the `rag` optional dependency set so Docker app and worker images built with `INSTALL_RAG_EXTRAS=true` can load LightRAG `PGVectorStorage`.
+- Rebuilt `knowledge-alakazam-app:local` through `docker --context colima-avito compose build app`; the build installed `pgvector==0.4.2`.
+- Recreated the running app container and verified `pgvector` imports inside it.
+- Verified container-internal `/health` returned `status: ok` with DB, S3, and enabled RAG runtime using `PGVectorStorage`.
+- Files changed: `pyproject.toml`, `uv.lock`, `NOTES.md`.
+- Commands run: `uv add --optional rag pgvector`, `docker --context colima-avito compose build app`, `docker --context colima-avito compose up -d app`, `docker --context colima-avito compose exec -T app python ...`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: Docker app import check for `pgvector`; container-internal `/health`; `uv run ruff check .`; `uv run pytest` with 46 passing tests.
+
+## 2026-07-06 - Text Ingest Parser Fallback
+
+- Added `app/rag_parsers.py` with a text-first RAG-Anything parser adapter that handles `.md` and `.txt` directly and delegates PDFs, images, and office files to the configured parser.
+- Wrapped each RAG-Anything runtime parser in the adapter so Markdown sample ingest no longer fails during the MinerU startup preflight when the MinerU CLI is unavailable in the running environment.
+- Documented the RAG-Anything 1.3.1 parser preflight behavior and the text-only fallback in `README.md`.
+- Added focused tests for direct Markdown parsing, non-text delegation, idempotent runtime installation, and missing text files.
+- Files changed: `app/rag_parsers.py`, `app/rag_runtime.py`, `tests/test_rag_parsers.py`, `README.md`, `NOTES.md`.
+- Commands run: `uv run python -c ...` package/API checks, `uv run mineru --version`, `uv run ruff format app/rag_parsers.py app/rag_runtime.py tests/test_rag_parsers.py`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: local package inspection confirmed `raganything==1.3.1` and MinerU CLI behavior; `uv run ruff check .`; `uv run pytest` with 50 passing tests.
+- Follow-up: non-text documents still require the selected parser runtime dependencies, such as MinerU for `PARSER=mineru`.
+
+## 2026-07-06 - RAG-Anything Auxiliary Cache Namespace Fix
+
+- Pre-installed RAG-Anything `parse_cache` and `multimodal_status` auxiliary caches with LightRAG `JsonKVStorage` before `_ensure_lightrag_initialized()` runs.
+- Avoided RAG-Anything creating unsupported `parse_cache` / `multimodal_status` namespaces through LightRAG `PGKVStorage`, which logs `Unknown namespace: parse_cache` during cache writes.
+- Documented the RAG-Anything 1.3.1 and LightRAG `PGKVStorage` namespace mismatch in `README.md`.
+- Added a focused runtime test proving RAG-Anything sees the pre-installed auxiliary caches before its initializer runs.
+- Files changed: `app/rag_runtime.py`, `tests/test_rag_runtime.py`, `README.md`, `NOTES.md`.
+- Commands run: `uv run python -c ...` package/API checks, `rg -n -uu ...` package source inspection, `uv run pytest tests/test_rag_runtime.py -q`, `uv run ruff format app/rag_runtime.py tests/test_rag_runtime.py`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: `tests/test_rag_runtime.py` with 5 passing tests; `uv run ruff check .`; `uv run pytest` with 51 passing tests.
+- Follow-up: rebuild/restart any running Docker app or worker containers so they use the patched runtime code.
+
+## 2026-07-06 - Separate Embedding Endpoint Configuration
+
+- Added optional `EMBEDDING_BASE_URL` configuration, with `EMBEDDING_ENDPOINT_URL` and `EMBEDDING_ENDPOINT` aliases, so embeddings can use a separate OpenAI-compatible endpoint from LLM/VLM calls.
+- Updated the OpenAI-compatible provider to pass `EMBEDDING_BASE_URL` to `openai_embed` and fall back to `OPENAI_BASE_URL` when it is unset.
+- Documented the new environment variable in `.env.example`, `README.md`, and the reindex operations checklist.
+- Added config and runtime tests covering environment loading, separate embedding endpoint routing, and fallback behavior.
+- Files changed: `app/config.py`, `app/rag_runtime.py`, `.env.example`, `tests/test_config.py`, `tests/test_rag_runtime.py`, `README.md`, `docs/operations.md`, `NOTES.md`.
+- Commands run: `uv run pytest tests/test_config.py tests/test_rag_runtime.py -q`, `uv run ruff format app/config.py app/rag_runtime.py tests/test_config.py tests/test_rag_runtime.py`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: targeted config/runtime tests with 9 passing tests; `ruff format` left files unchanged; `uv run ruff check .`; `uv run pytest` with 53 passing tests.
+- Follow-up: set `EMBEDDING_BASE_URL` only when the embedding model is served from a different endpoint; otherwise existing `OPENAI_BASE_URL` deployments continue to work unchanged.
+
+## 2026-07-06 - Makefile MinIO Clear Target
+
+- Added `dc.clear_s3` to clear the configured MinIO raw/assets bucket contents through the Docker Compose `create-buckets` service and recreate the buckets if needed.
+- Updated `.PHONY` to include the existing local Makefile targets plus `dc.clear_s3`.
+- Files changed: `Makefile`, `NOTES.md`.
+- Commands run: `make -n dc.clear_s3`, `docker compose config --quiet`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: Makefile dry-run produced the expected Compose command; Docker Compose config validation passed; `uv run ruff check .`; `uv run pytest` with 53 passing tests.
+- Follow-up: `dc.clear_s3` clears only `S3_BUCKET_RAW` and `S3_BUCKET_ASSETS`; it does not remove other MinIO buckets or delete the `minio-data` volume.

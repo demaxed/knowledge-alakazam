@@ -23,6 +23,7 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.example.test/v1")
     monkeypatch.setenv("LLM_MODEL", "llm-test")
     monkeypatch.setenv("VISION_MODEL", "vision-test")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embedding.example.test/v1")
     monkeypatch.setenv("EMBEDDING_MODEL", "embedding-test")
     monkeypatch.setenv("EMBEDDING_DIM", "768")
     monkeypatch.setenv("RAG_RUNTIME_DISABLED", "true")
@@ -64,6 +65,7 @@ def test_settings_loads_from_environment(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.openai_base_url == "https://llm.example.test/v1"
     assert settings.llm_model == "llm-test"
     assert settings.vision_model == "vision-test"
+    assert settings.embedding_base_url == "https://embedding.example.test/v1"
     assert settings.embedding_model == "embedding-test"
     assert settings.embedding_dim == 768
     assert settings.rag_runtime_disabled is True

@@ -1,0 +1,10 @@
+  services:
+    app:
+      env_file:
+        - .env.example
+        - .env
+
+    worker:
+      env_file:
+        - .env.example
+        - .env

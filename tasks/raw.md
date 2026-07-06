@@ -18,7 +18,8 @@ In the current empty folder, initialize a Python project using `uv`, create agen
   * `PGVectorStorage`
   * `PGGraphStorage`
   * `PGDocStatusStorage`
-* PostgreSQL must support `pgvector` and `Apache AGE`.
+* PostgreSQL must support `
+` and `Apache AGE`.
 * MinIO/S3 for:
 
   * raw uploaded documents

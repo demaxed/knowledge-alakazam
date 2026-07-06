@@ -104,14 +104,15 @@ Do not change these mappings without a migration or compatibility layer.
 
 ## How To Reindex
 
-Reindex when changing embedding model, embedding dimension, parser behavior,
-LightRAG storage layout, or when recovering from index corruption.
+Reindex when changing embedding endpoint, embedding model, embedding dimension,
+parser behavior, LightRAG storage layout, or when recovering from index
+corruption.
 
 Suggested process:
 
 1. Put ingest workers on hold.
-2. Record current `EMBEDDING_MODEL`, `EMBEDDING_DIM`, parser settings, and
-   LightRAG storage settings.
+2. Record current `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`,
+   parser settings, and LightRAG storage settings.
 3. Back up PostgreSQL and object storage.
 4. Create a new LightRAG workspace or clear the old LightRAG storage only after
    backup.

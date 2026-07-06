@@ -15,6 +15,7 @@ from urllib.parse import unquote
 from sqlalchemy.engine import make_url
 
 from app.config import Settings
+from app.rag_parsers import install_text_first_parser
 
 QueryMode = str
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ class OpenAICompatibleProvider:
                 texts,
                 model=self._settings.embedding_model,
                 api_key=self._api_key(),
-                base_url=self._settings.openai_base_url,
+                base_url=self._embedding_base_url(),
                 embedding_dim=embedding_dim,
                 max_token_size=max_token_size,
                 context=context,
@@ -130,6 +131,9 @@ class OpenAICompatibleProvider:
             )
 
         return embed
+
+    def _embedding_base_url(self) -> str | None:
+        return self._settings.embedding_base_url or self._settings.openai_base_url
 
     def _api_key(self) -> str:
         if self._settings.openai_api_key is None:
@@ -241,6 +245,12 @@ class RAGRuntime:
                 vision_model_func=vision_model_func,
                 embedding_func=embedding_func,
                 config=rag_config,
+            )
+            install_text_first_parser(self.rag_anything, parser_name=self.settings.parser)
+            await _install_raganything_auxiliary_caches(
+                self.rag_anything,
+                lightrag=self.lightrag,
+                embedding_func=embedding_func,
             )
 
             ensure_initialized = getattr(self.rag_anything, "_ensure_lightrag_initialized", None)
@@ -392,6 +402,41 @@ def workspace_for_tenant(tenant_id: str) -> str:
         normalized = "tenant"
     digest = hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
     return f"tenant_{normalized[:40]}_{digest}"
+
+
+async def _install_raganything_auxiliary_caches(
+    rag_anything: Any,
+    *,
+    lightrag: Any,
+    embedding_func: Any,
+) -> None:
+    """Install RAG-Anything auxiliary caches without using PGKVStorage.
+
+    RAG-Anything 1.3.1 creates ad-hoc ``parse_cache`` and
+    ``multimodal_status`` KV namespaces via LightRAG's configured KV storage.
+    LightRAG's PostgreSQL KV storage only supports its built-in namespace set,
+    so those ad-hoc namespaces fail during upsert. JsonKVStorage supports
+    arbitrary namespaces and is sufficient for these package-owned caches.
+    """
+
+    json_kv_module: Any = import_module("lightrag.kg.json_kv_impl")
+    json_kv_storage = json_kv_module.JsonKVStorage
+
+    for attribute_name, namespace in (
+        ("parse_cache", "parse_cache"),
+        ("multimodal_status_cache", "multimodal_status"),
+    ):
+        if getattr(rag_anything, attribute_name, None) is not None:
+            continue
+
+        cache = json_kv_storage(
+            namespace=namespace,
+            workspace=lightrag.workspace,
+            global_config=lightrag.__dict__,
+            embedding_func=embedding_func,
+        )
+        await cache.initialize()
+        setattr(rag_anything, attribute_name, cache)
 
 
 async def _coerce_answer(raw_answer: Any) -> str:

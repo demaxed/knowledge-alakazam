@@ -328,14 +328,15 @@ Copy `.env.example` to `.env` for local overrides. Do not commit real secrets.
 | `RAG_WORKING_DIR` | LightRAG working directory. | `./storage/lightrag` |
 | `RAG_OUTPUT_DIR` | Parsed output root. | `./storage/output` |
 | `RAG_INPUT_DIR` | Normalized ingest input root. | `./storage/inputs` |
-| `PARSER` | RAG-Anything parser selector passed by ingest service. | `mineru` |
+| `PARSER` | RAG-Anything parser selector passed by ingest service. `.md` and `.txt` are handled directly before the configured parser is used. | `mineru` |
 | `PARSE_METHOD` | RAG-Anything parse method. | `auto` |
 | `INGEST_SYNC` | Runs ingest inline when `true`; creates pending jobs when `false`. | `true` |
 | `WORKER_POLL_INTERVAL_SECONDS` | Worker idle poll interval. | `5.0` |
 | `OPENAI_API_KEY` | OpenAI-compatible API key for LLM, VLM, and embeddings. | empty |
-| `OPENAI_BASE_URL` | Optional OpenAI-compatible base URL. | empty |
+| `OPENAI_BASE_URL` | Optional OpenAI-compatible base URL for LLM and VLM calls. Embeddings also use this when `EMBEDDING_BASE_URL` is unset. | empty |
 | `LLM_MODEL` | Chat model for text answers and wiki compile. | `gpt-4.1-mini` |
 | `VISION_MODEL` | Vision model for multimodal processing. | `gpt-4.1-mini` |
+| `EMBEDDING_BASE_URL` | Optional OpenAI-compatible base URL for embedding calls only. Falls back to `OPENAI_BASE_URL` when unset. | empty |
 | `EMBEDDING_MODEL` | Embedding model. | `text-embedding-3-small` |
 | `EMBEDDING_DIM` | Embedding vector dimension. Immutable once an index exists. | `1536` |
 | `RAG_RUNTIME_DISABLED` | Disables lazy RAG runtime initialization. | `true` |
@@ -373,6 +374,20 @@ The installed RAG-Anything API exposes
 `RAGAnything(lightrag=..., llm_model_func=..., vision_model_func=...,
 embedding_func=..., config=...)`, `RAGAnythingConfig`, async `aquery(...)`,
 `process_document_complete(...)`, and `finalize_storages()`.
+
+RAG-Anything 1.3.1 verifies the configured parser during runtime
+initialization, before the app knows the input file type. The app wraps the
+configured parser with direct `.md`/`.txt` handling so text-only ingest does not
+require the MinerU CLI. PDFs, images, and office documents still use the
+configured parser and require that parser's runtime dependencies.
+
+RAG-Anything 1.3.1 also creates auxiliary KV namespaces named `parse_cache` and
+`multimodal_status`. LightRAG's `PGKVStorage` only supports its built-in
+namespace table map, so using it for those package-owned namespaces logs
+`Unknown namespace: parse_cache` during cache writes. The app pre-installs
+LightRAG `JsonKVStorage` for those two auxiliary caches under the tenant
+workspace in `RAG_WORKING_DIR`; LightRAG index, graph, document status, and LLM
+cache data still use the configured production storages.
 
 Runtime instances are lazy and tenant-scoped. The API maps each `tenant_id` to a
 safe LightRAG workspace name and caches one runtime per workspace in the
