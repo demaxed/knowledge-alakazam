@@ -1,5 +1,7 @@
 # Knowledge Alakazam
 
+![Alakazam](assets/alakazam.jpg)
+
 Production-oriented FastAPI backend for multimodal RAG ingest with
 RAG-Anything, LightRAG, PostgreSQL/pgvector/Apache AGE storage, S3-compatible
 asset storage, and a PostgreSQL-backed llm-wiki canonical store.

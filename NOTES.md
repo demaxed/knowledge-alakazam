@@ -123,3 +123,20 @@ Keep entries short and factual. Do not store secrets in this file.
 - Commands run: `make -n dc.clear_s3`, `docker compose config --quiet`, `uv run ruff check .`, `uv run pytest`.
 - Verification passed: Makefile dry-run produced the expected Compose command; Docker Compose config validation passed; `uv run ruff check .`; `uv run pytest` with 53 passing tests.
 - Follow-up: `dc.clear_s3` clears only `S3_BUCKET_RAW` and `S3_BUCKET_ASSETS`; it does not remove other MinIO buckets or delete the `minio-data` volume.
+
+## 2026-07-06 - README Image
+
+- Added the requested external Alakazam image to the top of `README.md`.
+- Files changed: `README.md`, `NOTES.md`.
+- Commands run: `uv run ruff check .`, `uv run pytest`.
+- Verification passed: `uv run ruff check .`; `uv run pytest` with 53 passing tests.
+- Follow-up: none.
+
+## 2026-07-06 - Local README Image Asset
+
+- Downloaded the README Alakazam image into the project at `assets/alakazam.jpg`.
+- Updated `README.md` to reference the local image path instead of the external URL.
+- Files changed: `README.md`, `NOTES.md`, `assets/alakazam.jpg`.
+- Commands run: `curl -L -o assets/alakazam.jpg ...`, `file assets/alakazam.jpg`, `ls -lh assets/alakazam.jpg`, `uv run ruff check .`, `uv run pytest`.
+- Verification passed: `README.md` no longer contains the external image URL; `assets/alakazam.jpg` is a valid 800x600 JPEG; `uv run ruff check .`; `uv run pytest` with 53 passing tests.
+- Follow-up: none.
