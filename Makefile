@@ -24,11 +24,21 @@ dc.db:
 local:
 	uv run uvicorn app.main:app --host 0.0.0.0 --port 8080
 
+worker:
+	uv run python -m worker.ingest_worker
+
 health:
 	curl http://127.0.0.1:8080/health | python3 -m json.tool
 
 upload:
 	sh ./upload_sample_docs.sh
+
+dc.check_upload:
+	docker compose exec postgres psql -U rag -d rag -c \
+	"select tenant_id, source_id, status, error, updated_at from ingest_job order by updated_at desc;"
+
+dc.check_worker_logs:
+	docker compose logs -f worker
 
 query_rag:
 	sh query_rag.sh
